@@ -11,7 +11,7 @@ AlignOffset(void* ptr, U8 alignment)
 {
     U64 overshot = (U64)ptr + (alignment - 1);
     U64 rounded  = overshot & ~(alignment - 1);
-    return (U8)(overshot - rounded);
+    return (U8)(rounded - (U64)ptr);
 }
 
 inline void
@@ -154,15 +154,15 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
         if (arena->first_block == 0 ||
             arena->first_block->space < AlignOffset((U8*)arena->first_block + arena->first_block->offset, alignment) + size)
         {
-            if (arena->first_block)
+            if (arena->current_block && arena->current_block->space)
             {
-                Arena_Free(arena, (U8*)arena->first_block + arena->first_block->offset, arena->first_block->space);
+                Arena_Free(arena, (U8*)arena->current_block + arena->current_block->offset, arena->current_block->space);
                 
-                arena->first_block->offset += arena->first_block->space;
-                arena->first_block->space   = 0;
+                arena->current_block->offset += arena->current_block->space;
+                arena->current_block->space   = 0;
             }
             
-            if (arena->current_block->next != 0)
+            if (arena->current_block && arena->current_block->next != 0)
             {
                 arena->current_block = arena->current_block->next;
                 arena->current_block->space  = arena->current_block->offset - sizeof(Memory_Block);
@@ -179,9 +179,9 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
                 *(void**)Align(memory, alignof(void*)) = memory;
                 
                 Memory_Block* block = (Memory_Block*)((U8*)Align(memory, alignof(void*)) + sizeof(void*));
-                block->next   = arena->first_block;
+                block->next   = 0;
                 block->offset = sizeof(Memory_Block);
-                block->space  = block_size - block->offset;
+                block->space  = block_size;
                 
                 if (arena->current_block) arena->current_block->next = block;
                 else                      arena->first_block         = block;
@@ -193,6 +193,7 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
         result = Align((U8*)arena->first_block + arena->first_block->offset, alignment);
         
         U32 advancement = (U32)(AlignOffset((U8*)arena->first_block + arena->first_block->offset, alignment) + size);
+        ASSERT(advancement - size == (U8*)result - (U8*)arena->first_block - arena->first_block->offset);
         arena->first_block->offset += advancement;
         arena->first_block->space  -= advancement;
     }

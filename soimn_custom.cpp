@@ -51,7 +51,6 @@ typedef f64 F64;
 
 #include "soimn_string.h"
 #include "soimn_memory.h"
-//#include "soimn_parser.h"
 
 ARGB_Color SoimnFunctionColor    = 0xFF99513D;
 ARGB_Color SoimnTypeColor        = 0xFFCD950C;
@@ -64,6 +63,36 @@ ARGB_Color SoimnHackColor        = 0xFFAA00AA;
 ARGB_Color SoimnTempColor        = 0xFFA00000;
 ARGB_Color SoimnHighCommentColor = 0xFFBBBBBB;
 ARGB_Color SoimnErrCommentColor  = 0xFFEE5830;
+
+struct Code_Note
+{
+    Code_Index_Note_Kind note_kind;
+    Range_i64 pos;
+    String_Const_u8 text;
+    struct Code_Index_File* file;
+    char peek[2];
+};
+
+struct Code_Note_Array
+{
+    Code_Note_Array* next;
+    U32 size;
+    U32 capacity;
+};
+
+struct Buffer_Info
+{
+    Memory_Arena arena;
+    
+    Code_Note_Array* note_arrays[27 + 27 + 1];
+};
+
+Buffer_Info* BufferInfos = 0;
+U32 BufferInfoCount      = 0;
+U32 BufferInfoCapacity   = 0;
+
+bool NoteArraysInitialized               = false;
+Code_Note_Array* NoteArrays[27 + 27 + 1] = {};
 
 CUSTOM_COMMAND_SIG(SoimnTryExit)
 {
@@ -551,27 +580,36 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                 
                 if (token->kind == TokenBaseKind_Identifier)
                 {
-                    ProfileScope(app, "Code Index Lookup");
-                    
-                    Code_Index_Note* note = 0;
+                    ProfileScope(app, "Code Note Array Lookup");
                     
                     String_Const_u8 lexeme = push_token_lexeme(app, scratch, buffer, token);
                     
-                    for (Buffer_ID buffer_scan = get_buffer_next(app, 0, Access_Always);
-                         buffer_scan != 0;
-                         buffer_scan = get_buffer_next(app, buffer_scan, Access_Always))
+                    Code_Note* note = 0;
+                    
+                    auto FirstCharIsValid = [](String_Const_u8 s) -> bool {
+                        return (s.str[0] >= 'a' && s.str[0] <= 'z' ||
+                                s.str[0] >= 'A' && s.str[0] <= 'Z' ||
+                                s.str[0] == '_');
+                    };
+                    
+                    if (FirstCharIsValid(lexeme))
                     {
-                        Code_Index_File* file = code_index_get_file(buffer_scan);
-                        
-                        if (file != 0)
+                        for (Code_Note_Array* scan = NoteArrays[lexeme.str[0]];
+                             scan != 0;
+                             scan = scan->next)
                         {
-                            for (I32 i = 0; i < file->note_array.count; ++i)
+                            for (Code_Note* note_scan = (Code_Note*)(scan + 1);
+                                 note_scan < (Code_Note*)(scan + 1) + scan->size;
+                                 ++note_scan)
                             {
-                                if (string_match(lexeme, file->note_array.ptrs[i]->text))
+                                if (string_match(lexeme, note_scan->text))
                                 {
-                                    note = file->note_array.ptrs[i];
+                                    note = note_scan;
+                                    break;
                                 }
                             }
+                            
+                            if (note != 0) break;
                         }
                     }
                     
@@ -746,10 +784,25 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
     draw_text_layout_default(app, text_layout_id);
 }
 
+void SoimnUpdateNoteArrays(Buffer_ID buffer);
+
 void
 SoimnRenderCaller(Application_Links* app, Frame_Info frame_info, View_ID view_id)
 {
     ProfileScope(app, "SoimnRenderCaller");
+    
+    // NOTE(soimn): Ensure NoteArrays are initalized
+    if (!NoteArraysInitialized)
+    {
+        for (Buffer_ID buffer_scan = get_buffer_next(app, 0, Access_Always);
+             buffer_scan != 0;
+             buffer_scan = get_buffer_next(app, buffer_scan, Access_Always))
+        {
+            SoimnUpdateNoteArrays(buffer_scan);
+        }
+        
+        NoteArraysInitialized = true;
+    }
     
     View_ID active_view = get_active_view(app, Access_Always);
     bool is_active_view = (active_view == view_id);
@@ -1013,11 +1066,41 @@ BUFFER_HOOK_SIG(SoimnBeginBuffer)
         }
     }
     
+    // NOTE(soimn): Add buffer info
+    
+    bool add_new = (buffer_id >= BufferInfoCount);
+    if (BufferInfoCount == BufferInfoCapacity)
+    {
+        BufferInfoCapacity = MAX(BufferInfoCapacity * 2, 128);
+        
+        void* memory = malloc((alignof(void*) - 1) + sizeof(void*) + sizeof(Buffer_Info) * BufferInfoCapacity);
+        
+        if (BufferInfoCount != 0)
+        {
+            Copy(BufferInfos, memory, sizeof(Buffer_Info) * BufferInfoCapacity);
+            
+            free((U8*)BufferInfos - sizeof(void*));
+        }
+        
+        BufferInfos = (Buffer_Info*)memory;
+    }
+    
+    ASSERT(buffer_id <= BufferInfoCapacity);
+    
+    Buffer_Info* info = &BufferInfos[buffer_id];
+    ZeroStruct(info);
+    
+    if (add_new) BufferInfoCount += 1;
+    
     return 0;
 }
 
+void SoimnRemoveNoteArrays(Buffer_Info* info);
 BUFFER_HOOK_SIG(SoimnEndBuffer)
 {
+    Buffer_Info* info = &BufferInfos[buffer_id];
+    SoimnRemoveNoteArrays(info);
+    
     Marker_List *list = get_marker_list_for_buffer(buffer_id);
     
     if (list != 0)
@@ -1028,6 +1111,141 @@ BUFFER_HOOK_SIG(SoimnEndBuffer)
     default_end_buffer(app, buffer_id);
     
     return 0;
+}
+
+void
+SoimnRemoveNoteArrays(Buffer_Info* info)
+{
+    for (U32 i = 0; i < ArrayCount(info->note_arrays); ++i)
+    {
+        if (info->note_arrays[i] == 0) continue;
+        
+        Code_Note_Array* prev = 0;
+        for (Code_Note_Array* scan = NoteArrays[i]; scan != 0; )
+        {
+            if (scan == info->note_arrays[i]) break;
+            
+            prev = scan;
+            scan = scan->next;
+        }
+        
+        if (prev) prev->next = info->note_arrays[i]->next;
+        else NoteArrays[i]   = info->note_arrays[i];
+    }
+    
+    Arena_FreeAll(&info->arena);
+}
+
+void
+SoimnUpdateNoteArrays(Buffer_ID buffer)
+{
+    ASSERT(buffer <= BufferInfoCount);
+    
+    Buffer_Info* info = &BufferInfos[buffer];
+    SoimnRemoveNoteArrays(info);
+    
+    Code_Index_File* file = code_index_get_file(buffer);
+    
+    if (file != 0)
+    {
+        for (I32 i = 0; i < file->note_array.count; ++i)
+        {
+            auto FirstCharIsValid = [](String_Const_u8 s) -> bool {
+                return (s.str[0] >= 'a' && s.str[0] <= 'z' ||
+                        s.str[0] >= 'A' && s.str[0] <= 'Z' ||
+                        s.str[0] == '_');
+            };
+            
+            ASSERT(FirstCharIsValid(file->note_array.ptrs[i]->text));
+            
+            Code_Note_Array** array = &info->note_arrays[i];
+            
+            if (*array == 0 || (*array)->size == (*array)->capacity)
+            {
+                U64 new_capacity = (*array == 0 ? 256 : 2 * (*array)->capacity);
+                auto new_array = (Code_Note_Array*)Arena_Allocate(&info->arena,
+                                                                  sizeof(Code_Note_Array) + sizeof(Code_Note) * new_capacity,
+                                                                  alignof(Code_Note_Array));
+                
+                new_array->next     = 0;
+                new_array->size     = 0;
+                new_array->capacity = new_capacity;
+                
+                if (*array != 0)
+                {
+                    Copy((U8*)*array + sizeof(Code_Note_Array), (U8*)new_array + sizeof(Code_Note_Array),
+                         (*array)->size * sizeof(Code_Note));
+                    
+                    new_array->size = (*array)->size;
+                }
+                
+                if (*array != 0) new_array->next = (*array)->next;
+                else             new_array->next = NoteArrays[i];
+                
+                *array        = new_array;
+                NoteArrays[i] = new_array;
+            }
+            
+            Code_Note* note = (Code_Note*)(info->note_arrays[i] + 1) + info->note_arrays[i]->size;
+            info->note_arrays[i]->size += 1;
+            
+            Code_Index_Note* index_note = file->note_array.ptrs[i];
+            
+            note->note_kind = index_note->note_kind;
+            note->pos       = index_note->pos;
+            note->text      = index_note->text;
+            note->file      = index_note->file;
+            note->peek[0]   = index_note->text.str[0];
+            note->peek[1]   = (index_note->text.size > 1 ? index_note->text.str[1] : 0);
+        }
+    }
+}
+
+void
+SoimnTick(Application_Links *app, Frame_Info frame_info)
+{
+    //code_index_update_tick(app);
+    Scratch_Block scratch(app);
+    
+    for (Buffer_Modified_Node *node = global_buffer_modified_set.first;
+         node != 0;
+         node = node->next)
+    {
+        Temp_Memory_Block temp(scratch);
+        Buffer_ID buffer_id = node->buffer;
+        
+        String_Const_u8 contents = push_whole_buffer(app, scratch, buffer_id);
+        Token_Array tokens = get_token_array_from_buffer(app, buffer_id);
+        
+        if (tokens.count == 0) continue;
+        
+        Arena arena = make_arena_system(KB(16));
+        
+        Code_Index_File* index = push_array_zero(&arena, Code_Index_File, 1);
+        index->buffer = buffer_id;
+        
+        Generic_Parse_State state = {};
+        generic_parse_init(app, &arena, contents, &tokens, &state);
+        
+        state.do_cpp_parse = true;
+        generic_parse_full_input_breaks(index, &state, max_i32);
+        
+        code_index_lock();
+        code_index_set_file(buffer_id, arena, index);
+        
+        SoimnUpdateNoteArrays(buffer_id);
+        
+        code_index_unlock();
+        
+        buffer_clear_layout_cache(app, buffer_id);
+    }
+    
+    buffer_modified_set_clear();
+    
+    if (tick_all_fade_ranges(app, frame_info.animation_dt))
+    {
+        animate_in_n_milliseconds(app, 0);
+    }
 }
 
 void
@@ -1053,7 +1271,7 @@ custom_layer_init(Application_Links* app)
     {
         set_custom_hook(app, HookID_BufferViewerUpdate,      default_view_adjust);
         set_custom_hook(app, HookID_ViewEventHandler,        default_view_input_handler);
-        set_custom_hook(app, HookID_Tick,                    default_tick);
+        set_custom_hook(app, HookID_Tick,                    SoimnTick);
         set_custom_hook(app, HookID_RenderCaller,            SoimnRenderCaller);
         set_custom_hook(app, HookID_WholeScreenRenderCaller, SoimnWholeScreenRenderCaller);
         

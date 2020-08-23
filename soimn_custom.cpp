@@ -594,6 +594,10 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                     
                     ASSERT(array_index != -1);
                     
+                    char lexeme_peek[2];
+                    lexeme_peek[0] = first_char;
+                    lexeme_peek[1] = (lexeme.size != 0 ? lexeme.str[1] : 0);
+                    
                     for (Code_Note_Array* scan = NoteArrays[array_index];
                          scan != 0;
                          scan = scan->next)
@@ -602,7 +606,9 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                              note_scan < (Code_Note*)(scan + 1) + scan->size;
                              ++note_scan)
                         {
-                            if (string_match(lexeme, note_scan->text))
+                            if (note_scan->peek[0] == lexeme_peek[0] &&
+                                note_scan->peek[1] == lexeme_peek[1] &&
+                                string_match(lexeme, note_scan->text))
                             {
                                 note = note_scan;
                                 break;
@@ -734,6 +740,32 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
     Color_Array colors = finalize_color_array(defcolor_text_cycle);
     draw_paren_highlight(app, buffer, text_layout_id, cursor_pos, colors.vals, colors.count);
     
+    I64 view_cursor_pos = view_get_cursor_pos(app, view_id);
+    I64 view_mark_pos   = view_get_mark_pos(app, view_id);
+    
+    // NOTE(soimn): Brace lines
+    Range_i64 nest = {};
+    I64 nest_pos   = view_cursor_pos;
+    while (find_surrounding_nest(app, buffer, nest_pos, FindNest_Scope, &nest))
+    {
+        Rect_f32 start = text_layout_character_on_screen(app, text_layout_id, nest.start);
+        Rect_f32 end   = text_layout_character_on_screen(app, text_layout_id, nest.end - 1);
+        
+        F32 line_thickness = 5;
+        
+        Rect_f32 line_rect;
+        line_rect.x0 = start.x0;
+        line_rect.x1 = start.x0 + line_thickness;
+        line_rect.y0 = start.y1;
+        line_rect.y1 = (end.y0 != -1 ? end.y0 : visible_range.end);
+        
+        ARGB_Color color = finalize_color(defcolor_comment, 0);
+        
+        draw_rectangle(app, line_rect, 0, color);
+        
+        nest_pos = nest.start - 1;
+    }
+    
     // NOTE(allen): Line highlight
     i64 line_number = get_line_number_from_pos(app, buffer, cursor_pos);
     draw_line_highlight(app, text_layout_id, line_number,
@@ -745,9 +777,6 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
     if (!has_highlight_range)
     {
         I32 cursor_sub_id = default_cursor_sub_id();
-        
-        I64 view_cursor_pos = view_get_cursor_pos(app, view_id);
-        I64 view_mark_pos   = view_get_mark_pos(app, view_id);
         
         F32 outline_thickness = 2;
         
@@ -1070,12 +1099,12 @@ BUFFER_HOOK_SIG(SoimnBeginBuffer)
             
             free(*(void**)((U8*)BufferInfos - sizeof(U64)));
         }
-
-	else
-	{
-		BufferInfoCount = 1;
-		ZeroStruct(&new_buffer_infos[0]);
-	}
+        
+        else
+        {
+            BufferInfoCount = 1;
+            ZeroStruct(&new_buffer_infos[0]);
+        }
         
         BufferInfos = new_buffer_infos;
     }
@@ -1084,9 +1113,9 @@ BUFFER_HOOK_SIG(SoimnBeginBuffer)
     
     Buffer_Info* info = &BufferInfos[buffer_id];
     ZeroStruct(info);
-
+    
     if (add_new) BufferInfoCount += 1;
-
+    
     SoimnUpdateNoteArrays(buffer_id);
     
     return 0;
@@ -1122,10 +1151,10 @@ SoimnRemoveNoteArrays(Buffer_Info* info)
         {
             if (scan == info->note_arrays[i]) break;
             else
-	    { 
-		    prev = scan;
-		    scan = scan->next;
-	    }
+            {
+                prev = scan;
+                scan = scan->next;
+            }
         }
         
         if (prev) prev->next = info->note_arrays[i]->next;
@@ -1163,7 +1192,7 @@ SoimnUpdateNoteArrays(Buffer_ID buffer)
             
             Code_Note_Array* array = info->note_arrays[array_index];
             
-	    ASSERT(array == 0 || array->size <= array->capacity);
+            ASSERT(array == 0 || array->size <= array->capacity);
             if (array == 0 || array->size == array->capacity)
             {
                 U32 new_capacity = (array == 0 ? 256 : 2 * array->capacity);
@@ -1171,7 +1200,7 @@ SoimnUpdateNoteArrays(Buffer_ID buffer)
                                                                   sizeof(Code_Note_Array) + sizeof(Code_Note) * new_capacity,
                                                                   alignof(Code_Note_Array));
                 
-		new_array->size     = 0;
+                new_array->size     = 0;
                 new_array->capacity = new_capacity;
                 
                 if (array != 0) new_array->next = array->next;
@@ -1183,30 +1212,30 @@ SoimnUpdateNoteArrays(Buffer_ID buffer)
                          array->size * sizeof(Code_Note));
                     
                     new_array->size = array->size;
-		    ASSERT(new_array->size <= 512);
-
-		Code_Note_Array* prev = 0;
-		for (Code_Note_Array* scan = NoteArrays[array_index]; scan != 0; )
-		{
-		    if (scan == array) break;
-		    else
-		    { 
-			    prev = scan;
-			    scan = scan->next;
-		   }
-		}
-		
-		if (prev) prev->next         = array->next;
-		else NoteArrays[array_index] = array->next;
-		    
-
-		    Arena_Free(&info->arena, array, array->capacity * sizeof(Code_Note));
+                    ASSERT(new_array->size <= 512);
+                    
+                    Code_Note_Array* prev = 0;
+                    for (Code_Note_Array* scan = NoteArrays[array_index]; scan != 0; )
+                    {
+                        if (scan == array) break;
+                        else
+                        {
+                            prev = scan;
+                            scan = scan->next;
+                        }
+                    }
+                    
+                    if (prev) prev->next         = array->next;
+                    else NoteArrays[array_index] = array->next;
+                    
+                    
+                    Arena_Free(&info->arena, array, array->capacity * sizeof(Code_Note));
                 }
-
-		array = new_array;
-		info->note_arrays[array_index] = array;
-		array->next             = NoteArrays[array_index];
-		NoteArrays[array_index] = array;
+                
+                array = new_array;
+                info->note_arrays[array_index] = array;
+                array->next             = NoteArrays[array_index];
+                NoteArrays[array_index] = array;
             }
             
             Code_Note* note = (Code_Note*)(array + 1) + array->size;

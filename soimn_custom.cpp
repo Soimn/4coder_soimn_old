@@ -83,7 +83,6 @@ struct Code_Note_Array
 struct Buffer_Info
 {
     Memory_Arena arena;
-    
     Code_Note_Array* note_arrays[27 + 27 + 1];
 };
 
@@ -91,7 +90,6 @@ Buffer_Info* BufferInfos = 0;
 U32 BufferInfoCount      = 0;
 U32 BufferInfoCapacity   = 0;
 
-bool NoteArraysInitialized               = false;
 Code_Note_Array* NoteArrays[27 + 27 + 1] = {};
 
 CUSTOM_COMMAND_SIG(SoimnTryExit)
@@ -586,31 +584,32 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                     
                     Code_Note* note = 0;
                     
-                    auto FirstCharIsValid = [](String_Const_u8 s) -> bool {
-                        return (s.str[0] >= 'a' && s.str[0] <= 'z' ||
-                                s.str[0] >= 'A' && s.str[0] <= 'Z' ||
-                                s.str[0] == '_');
-                    };
+                    char first_char = lexeme.str[0];
                     
-                    if (FirstCharIsValid(lexeme))
+                    I32 array_index = -1;
+                    
+                    if      (first_char >= 'a' && first_char <= 'z') array_index = first_char - 'a';
+                    else if (first_char >= 'A' && first_char <= 'Z') array_index = (first_char - 'A') + 27;
+                    else if (first_char == '_')                      array_index = 54;
+                    
+                    ASSERT(array_index != -1);
+                    
+                    for (Code_Note_Array* scan = NoteArrays[array_index];
+                         scan != 0;
+                         scan = scan->next)
                     {
-                        for (Code_Note_Array* scan = NoteArrays[lexeme.str[0]];
-                             scan != 0;
-                             scan = scan->next)
+                        for (Code_Note* note_scan = (Code_Note*)(scan + 1);
+                             note_scan < (Code_Note*)(scan + 1) + scan->size;
+                             ++note_scan)
                         {
-                            for (Code_Note* note_scan = (Code_Note*)(scan + 1);
-                                 note_scan < (Code_Note*)(scan + 1) + scan->size;
-                                 ++note_scan)
+                            if (string_match(lexeme, note_scan->text))
                             {
-                                if (string_match(lexeme, note_scan->text))
-                                {
-                                    note = note_scan;
-                                    break;
-                                }
+                                note = note_scan;
+                                break;
                             }
-                            
-                            if (note != 0) break;
                         }
+                        
+                        if (note != 0) break;
                     }
                     
                     if (note != 0)
@@ -790,19 +789,6 @@ void
 SoimnRenderCaller(Application_Links* app, Frame_Info frame_info, View_ID view_id)
 {
     ProfileScope(app, "SoimnRenderCaller");
-    
-    // NOTE(soimn): Ensure NoteArrays are initalized
-    if (!NoteArraysInitialized)
-    {
-        for (Buffer_ID buffer_scan = get_buffer_next(app, 0, Access_Always);
-             buffer_scan != 0;
-             buffer_scan = get_buffer_next(app, buffer_scan, Access_Always))
-        {
-            SoimnUpdateNoteArrays(buffer_scan);
-        }
-        
-        NoteArraysInitialized = true;
-    }
     
     View_ID active_view = get_active_view(app, Access_Always);
     bool is_active_view = (active_view == view_id);
@@ -1068,29 +1054,40 @@ BUFFER_HOOK_SIG(SoimnBeginBuffer)
     
     // NOTE(soimn): Add buffer info
     
-    bool add_new = (buffer_id >= BufferInfoCount);
+    bool add_new = ((U32)buffer_id >= BufferInfoCount);
     if (BufferInfoCount == BufferInfoCapacity)
     {
         BufferInfoCapacity = MAX(BufferInfoCapacity * 2, 128);
         
-        void* memory = malloc((alignof(void*) - 1) + sizeof(void*) + sizeof(Buffer_Info) * BufferInfoCapacity);
+        void* memory = malloc((alignof(U64) - 1) + sizeof(U64) + sizeof(Buffer_Info) * BufferInfoCapacity + KB(40));
         
+        *(void**)Align(memory, alignof(U64)) = memory;
+        
+        Buffer_Info* new_buffer_infos = (Buffer_Info*)((U8*)Align(memory, alignof(void*)) + sizeof(U64));
         if (BufferInfoCount != 0)
         {
-            Copy(BufferInfos, memory, sizeof(Buffer_Info) * BufferInfoCapacity);
+            Copy(BufferInfos, new_buffer_infos, sizeof(Buffer_Info) * BufferInfoCount);
             
-            free((U8*)BufferInfos - sizeof(void*));
+            free(*(void**)((U8*)BufferInfos - sizeof(U64)));
         }
+
+	else
+	{
+		BufferInfoCount = 1;
+		ZeroStruct(&new_buffer_infos[0]);
+	}
         
-        BufferInfos = (Buffer_Info*)memory;
+        BufferInfos = new_buffer_infos;
     }
     
-    ASSERT(buffer_id <= BufferInfoCapacity);
+    ASSERT((U32)buffer_id <= BufferInfoCapacity);
     
     Buffer_Info* info = &BufferInfos[buffer_id];
     ZeroStruct(info);
-    
+
     if (add_new) BufferInfoCount += 1;
+
+    SoimnUpdateNoteArrays(buffer_id);
     
     return 0;
 }
@@ -1118,28 +1115,32 @@ SoimnRemoveNoteArrays(Buffer_Info* info)
 {
     for (U32 i = 0; i < ArrayCount(info->note_arrays); ++i)
     {
-        if (info->note_arrays[i] == 0) continue;
+        if (info->note_arrays[i] == 0 || NoteArrays[i] == 0) continue;
         
         Code_Note_Array* prev = 0;
         for (Code_Note_Array* scan = NoteArrays[i]; scan != 0; )
         {
             if (scan == info->note_arrays[i]) break;
-            
-            prev = scan;
-            scan = scan->next;
+            else
+	    { 
+		    prev = scan;
+		    scan = scan->next;
+	    }
         }
         
         if (prev) prev->next = info->note_arrays[i]->next;
-        else NoteArrays[i]   = info->note_arrays[i];
+        else NoteArrays[i]   = info->note_arrays[i]->next;
     }
     
-    Arena_FreeAll(&info->arena);
+    Arena_ClearAll(&info->arena);
+    
+    Zero(info->note_arrays, sizeof(Code_Note_Array*) * ArrayCount(info->note_arrays));
 }
 
 void
 SoimnUpdateNoteArrays(Buffer_ID buffer)
 {
-    ASSERT(buffer <= BufferInfoCount);
+    ASSERT(buffer >= 0 && (U32)buffer < BufferInfoCount);
     
     Buffer_Info* info = &BufferInfos[buffer];
     SoimnRemoveNoteArrays(info);
@@ -1150,44 +1151,66 @@ SoimnUpdateNoteArrays(Buffer_ID buffer)
     {
         for (I32 i = 0; i < file->note_array.count; ++i)
         {
-            auto FirstCharIsValid = [](String_Const_u8 s) -> bool {
-                return (s.str[0] >= 'a' && s.str[0] <= 'z' ||
-                        s.str[0] >= 'A' && s.str[0] <= 'Z' ||
-                        s.str[0] == '_');
-            };
+            char first_char = file->note_array.ptrs[i]->text.str[0];
             
-            ASSERT(FirstCharIsValid(file->note_array.ptrs[i]->text));
+            I32 array_index = -1;
             
-            Code_Note_Array** array = &info->note_arrays[i];
+            if      (first_char >= 'a' && first_char <= 'z') array_index = first_char - 'a';
+            else if (first_char >= 'A' && first_char <= 'Z') array_index = (first_char - 'A') + 27;
+            else if (first_char == '_')                      array_index = 54;
             
-            if (*array == 0 || (*array)->size == (*array)->capacity)
+            ASSERT(array_index != -1);
+            
+            Code_Note_Array* array = info->note_arrays[array_index];
+            
+	    ASSERT(array == 0 || array->size <= array->capacity);
+            if (array == 0 || array->size == array->capacity)
             {
-                U64 new_capacity = (*array == 0 ? 256 : 2 * (*array)->capacity);
+                U32 new_capacity = (array == 0 ? 256 : 2 * array->capacity);
                 auto new_array = (Code_Note_Array*)Arena_Allocate(&info->arena,
                                                                   sizeof(Code_Note_Array) + sizeof(Code_Note) * new_capacity,
                                                                   alignof(Code_Note_Array));
                 
-                new_array->next     = 0;
-                new_array->size     = 0;
+		new_array->size     = 0;
                 new_array->capacity = new_capacity;
                 
-                if (*array != 0)
+                if (array != 0) new_array->next = array->next;
+                else            new_array->next = NoteArrays[array_index];
+                
+                if (array != 0)
                 {
-                    Copy((U8*)*array + sizeof(Code_Note_Array), (U8*)new_array + sizeof(Code_Note_Array),
-                         (*array)->size * sizeof(Code_Note));
+                    Copy((U8*)array + sizeof(Code_Note_Array), (U8*)new_array + sizeof(Code_Note_Array),
+                         array->size * sizeof(Code_Note));
                     
-                    new_array->size = (*array)->size;
+                    new_array->size = array->size;
+		    ASSERT(new_array->size <= 512);
+
+		Code_Note_Array* prev = 0;
+		for (Code_Note_Array* scan = NoteArrays[array_index]; scan != 0; )
+		{
+		    if (scan == array) break;
+		    else
+		    { 
+			    prev = scan;
+			    scan = scan->next;
+		   }
+		}
+		
+		if (prev) prev->next         = array->next;
+		else NoteArrays[array_index] = array->next;
+		    
+
+		    Arena_Free(&info->arena, array, array->capacity * sizeof(Code_Note));
                 }
-                
-                if (*array != 0) new_array->next = (*array)->next;
-                else             new_array->next = NoteArrays[i];
-                
-                *array        = new_array;
-                NoteArrays[i] = new_array;
+
+		array = new_array;
+		info->note_arrays[array_index] = array;
+		array->next             = NoteArrays[array_index];
+		NoteArrays[array_index] = array;
             }
             
-            Code_Note* note = (Code_Note*)(info->note_arrays[i] + 1) + info->note_arrays[i]->size;
-            info->note_arrays[i]->size += 1;
+            Code_Note* note = (Code_Note*)(array + 1) + array->size;
+            array->size    += 1;
             
             Code_Index_Note* index_note = file->note_array.ptrs[i];
             

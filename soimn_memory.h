@@ -20,7 +20,7 @@ Copy(void* src, void* dst, U64 size)
     U8* bsrc = (U8*)src;
     U8* bdst = (U8*)dst;
     
-    if (bsrc < bdst)
+    if (bsrc < bdst && bsrc + size > bdst)
     {
         for (U64 i = 0; i < size; ++i)
         {
@@ -110,7 +110,7 @@ Arena_FreeAll(Memory_Arena* arena)
     {
         Memory_Block* next = block->next;
         
-        free((U8*)block - sizeof(void*));
+        free(*(void**)((U8*)block - sizeof(U64)));
         block = next;
     }
     
@@ -121,9 +121,12 @@ Arena_FreeAll(Memory_Arena* arena)
 void
 Arena_ClearAll(Memory_Arena* arena)
 {
-    arena->first_block->space  = arena->first_block->offset - sizeof(Memory_Block);
-    arena->first_block->offset = sizeof(Memory_Block);
-    arena->current_block       = arena->first_block;
+    if (arena->first_block)
+    {
+    	arena->first_block->space  = arena->first_block->offset - sizeof(Memory_Block);
+    	arena->first_block->offset = sizeof(Memory_Block);
+    	arena->current_block       = arena->first_block;
+    }
 }
 
 void*
@@ -162,7 +165,8 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
                 arena->current_block->space   = 0;
             }
             
-            if (arena->current_block && arena->current_block->next != 0)
+            if (arena->current_block && arena->current_block->next != 0 &&
+	        (arena->current_block->next->offset + arena->current_block->next->space) - sizeof(Memory_Block) >= size)
             {
                 arena->current_block = arena->current_block->next;
                 arena->current_block->space  = arena->current_block->offset - sizeof(Memory_Block);
@@ -173,13 +177,13 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
             {
                 U32 block_size = (U32)MAX(MEMORY_ARENA_DEFAULT_BLOCK_SIZE, size);
                 
-                void* memory = (Memory_Block*)malloc((alignof(void*) - 1) +  sizeof(void*) +
+                void* memory = (Memory_Block*)malloc((alignof(U64) - 1) +  sizeof(U64) +
                                                      sizeof(Memory_Block) + block_size);
                 
-                *(void**)Align(memory, alignof(void*)) = memory;
+                *(void**)Align(memory, alignof(U64)) = memory;
                 
-                Memory_Block* block = (Memory_Block*)((U8*)Align(memory, alignof(void*)) + sizeof(void*));
-                block->next   = 0;
+                Memory_Block* block = (Memory_Block*)((U8*)Align(memory, alignof(U64)) + sizeof(U64));
+                block->next   = (arena->current_block ? arena->current_block->next : 0);
                 block->offset = sizeof(Memory_Block);
                 block->space  = block_size;
                 
@@ -190,12 +194,12 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
             }
         }
         
-        result = Align((U8*)arena->first_block + arena->first_block->offset, alignment);
+        result = Align((U8*)arena->current_block + arena->current_block->offset, alignment);
         
-        U32 advancement = (U32)(AlignOffset((U8*)arena->first_block + arena->first_block->offset, alignment) + size);
-        ASSERT(advancement - size == (U8*)result - (U8*)arena->first_block - arena->first_block->offset);
-        arena->first_block->offset += advancement;
-        arena->first_block->space  -= advancement;
+        U32 advancement = (U32)(AlignOffset((U8*)arena->current_block + arena->current_block->offset, alignment) + size);
+        
+        arena->current_block->offset += advancement;
+        arena->current_block->space  -= advancement;
     }
     
     return result;

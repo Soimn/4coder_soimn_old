@@ -66,3 +66,31 @@ CStringLength(const char* cstring)
     for (char* scan = (char*)cstring; *scan; ++scan, ++result);
     return result;
 }
+
+void
+Advance(String* string, U64 amount)
+{
+    if (string->size >= amount)
+    {
+        string->data += amount;
+        string->size -= amount;
+    }
+    
+    else ZeroStruct(string);
+}
+
+void
+EatAllWhitespace(String* string)
+{
+    while (string->size != 0)
+    {
+        if ((*string->data == ' '  ||
+             *string->data == '\t' ||
+             *string->data == '\v'))
+        {
+            Advance(string, 1);
+        }
+        
+        else break;
+    }
+}

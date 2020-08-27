@@ -49,8 +49,9 @@ typedef f64 F64;
 
 #include <stdlib.h>
 
-#include "soimn_string.h"
 #include "soimn_memory.h"
+#include "soimn_string.h"
+#include "soimn_calc.h"
 
 ARGB_Color SoimnFunctionColor    = 0xFF99513D;
 ARGB_Color SoimnTypeColor        = 0xFFCD950C;
@@ -516,18 +517,21 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
 {
     ProfileScope(app, "SoimnRenderBuffer");
     
+    Scratch_Block scratch(app);
+    
     View_ID active_view = get_active_view(app, Access_Always);
     bool is_active_view = (active_view == view_id);
     
     Range_i64 visible_range = text_layout_get_visible_range(app, text_layout_id);
     Face_Metrics metrics    = get_face_metrics(app, face_id);
     
+    I64 cursor_pos = view_correct_cursor(app, view_id);
+    view_correct_mark(app, view_id);
+    
     // NOTE(allen): Token colorizing
     Token_Array token_array = get_token_array_from_buffer(app, buffer);
     if (token_array.tokens != 0)
     {
-        Scratch_Block scratch(app);
-        
         i64 first_index         = token_index_from_pos(&token_array, visible_range.first);
         Token_Iterator_Array it = token_iterator_index(0, &token_array, first_index);
         for (;;)
@@ -592,37 +596,56 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                     else if (first_char >= 'A' && first_char <= 'Z') array_index = (first_char - 'A') + 27;
                     else if (first_char == '_')                      array_index = 54;
                     
-                    ASSERT(array_index != -1);
-                    
-                    char lexeme_peek[2];
-                    lexeme_peek[0] = first_char;
-                    lexeme_peek[1] = (lexeme.size != 0 ? lexeme.str[1] : 0);
-                    
-                    for (Code_Note_Array* scan = NoteArrays[array_index];
-                         scan != 0;
-                         scan = scan->next)
+                    if (array_index != -1)
                     {
-                        for (Code_Note* note_scan = (Code_Note*)(scan + 1);
-                             note_scan < (Code_Note*)(scan + 1) + scan->size;
-                             ++note_scan)
-                        {
-                            if (note_scan->peek[0] == lexeme_peek[0] &&
-                                note_scan->peek[1] == lexeme_peek[1] &&
-                                string_match(lexeme, note_scan->text))
-                            {
-                                note = note_scan;
-                                break;
-                            }
-                        }
+                        char lexeme_peek[2];
+                        lexeme_peek[0] = first_char;
+                        lexeme_peek[1] = (lexeme.size != 0 ? lexeme.str[1] : 0);
                         
-                        if (note != 0) break;
+                        for (Code_Note_Array* scan = NoteArrays[array_index];
+                             scan != 0;
+                             scan = scan->next)
+                        {
+                            for (Code_Note* note_scan = (Code_Note*)(scan + 1);
+                                 note_scan < (Code_Note*)(scan + 1) + scan->size;
+                                 ++note_scan)
+                            {
+                                if (note_scan->peek[0] == lexeme_peek[0] &&
+                                    note_scan->peek[1] == lexeme_peek[1] &&
+                                    string_match(lexeme, note_scan->text))
+                                {
+                                    note = note_scan;
+                                    break;
+                                }
+                            }
+                            
+                            if (note != 0) break;
+                        }
                     }
                     
                     if (note != 0)
                     {
-                        if      (note->note_kind == CodeIndexNote_Type)     argb_color = SoimnTypeColor;
-                        else if (note->note_kind == CodeIndexNote_Function) argb_color = SoimnFunctionColor;
-                        else if (note->note_kind == CodeIndexNote_Macro)    argb_color = SoimnMacroColor;
+                        Token_Iterator_Array peek_it = token_iterator_index(0, &token_array,
+                                                                            token_index_from_pos(&token_array,
+                                                                                                 token->pos));
+                        
+                        // TODO(soimn): Add syntax highlighting for enum members
+                        
+                        Token* peek = 0;
+                        if (token_it_inc(&peek_it)) peek = token_it_read(&peek_it);
+                        
+                        if (note->note_kind == CodeIndexNote_Macro) argb_color = SoimnMacroColor;
+                        else if (note->note_kind == CodeIndexNote_Type &&
+                                 (peek == 0 || peek->kind != TokenBaseKind_ScopeOpen))
+                        {
+                            argb_color = SoimnTypeColor;
+                        }
+                        
+                        else if (note->note_kind == CodeIndexNote_Function &&
+                                 peek != 0 && peek->kind == TokenBaseKind_ParentheticalOpen)
+                        {
+                            argb_color = SoimnFunctionColor;
+                        }
                     }
                 }
                 
@@ -644,48 +667,74 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                     
                     if (buffer_read_range(app, buffer, Ii64(token), comment_string.data))
                     {
-                        if (SubStringCompare(comment_string, CONST_STRING("//// ")) &&
-                            comment_string.size >= 5)
+                        if (comment_string.size >= 3 &&
+                            SubStringCompare(comment_string, CONST_STRING("//c")) &&
+                            SubStringCompare(comment_string, CONST_STRING("/*c")))
                         {
-                            paint_text_color(app, text_layout_id, Ii64(token), SoimnErrCommentColor);
-                            comment_string.data += 5;
-                            comment_string.size -= 5;
-                        }
-                        
-                        else if (SubStringCompare(comment_string, CONST_STRING("/// ")) &&
-                                 comment_string.size >= 4)
-                        {
-                            paint_text_color(app, text_layout_id, Ii64(token), SoimnHighCommentColor);
-                            comment_string.data += 4;
-                            comment_string.size -= 4;
-                        }
-                        
-                        
-                        U32 offset = 0;
-                        while (offset != comment_string.size)
-                        {
-                            String tail;
-                            tail.data = comment_string.data + offset;
-                            tail.size = comment_string.size - offset;
+                            String calc_comment;
+                            calc_comment.data = comment_string.data + 3;
                             
-                            bool did_match = false;
-                            for (U32 i = 0; i < ArrayCount(keywords); ++i)
+                            if (SubStringCompare(comment_string, CONST_STRING("/*c")))
                             {
-                                if (SubStringCompare(tail, keywords[i].string) &&
-                                    tail.size >= keywords[i].string.size)
-                                {
-                                    paint_text_color(app, text_layout_id,
-                                                     Ii64_size(token->pos + offset, keywords[i].string.size),
-                                                     keywords[i].color);
-                                    
-                                    offset += (U32)keywords[i].string.size;
-                                    
-                                    did_match = true;
-                                    break;
-                                }
+                                calc_comment.size = comment_string.size - 6;
                             }
                             
-                            if (!did_match) offset += 1;
+                            else
+                            {
+                                calc_comment.size = comment_string.size - 3;
+                            }
+                            
+                            if (cursor_pos >= token->pos && cursor_pos < token->pos + token->size)
+                            {
+                                RenderCalcComment(token->pos, calc_comment);
+                            }
+                        }
+                        
+                        else
+                        {
+                            if (SubStringCompare(comment_string, CONST_STRING("//// ")) &&
+                                comment_string.size >= 5)
+                            {
+                                paint_text_color(app, text_layout_id, Ii64(token), SoimnErrCommentColor);
+                                comment_string.data += 5;
+                                comment_string.size -= 5;
+                            }
+                            
+                            else if (SubStringCompare(comment_string, CONST_STRING("/// ")) &&
+                                     comment_string.size >= 4)
+                            {
+                                paint_text_color(app, text_layout_id, Ii64(token), SoimnHighCommentColor);
+                                comment_string.data += 4;
+                                comment_string.size -= 4;
+                            }
+                            
+                            
+                            U32 offset = 0;
+                            while (offset != comment_string.size)
+                            {
+                                String tail;
+                                tail.data = comment_string.data + offset;
+                                tail.size = comment_string.size - offset;
+                                
+                                bool did_match = false;
+                                for (U32 i = 0; i < ArrayCount(keywords); ++i)
+                                {
+                                    if (SubStringCompare(tail, keywords[i].string) &&
+                                        tail.size >= keywords[i].string.size)
+                                    {
+                                        paint_text_color(app, text_layout_id,
+                                                         Ii64_size(token->pos + offset, keywords[i].string.size),
+                                                         keywords[i].color);
+                                        
+                                        offset += (U32)keywords[i].string.size;
+                                        
+                                        did_match = true;
+                                        break;
+                                    }
+                                }
+                                
+                                if (!did_match) offset += 1;
+                            }
                         }
                     }
                 }
@@ -699,9 +748,6 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
     {
         paint_text_color_fcolor(app, text_layout_id, visible_range, fcolor_id(defcolor_text_default));
     }
-    
-    I64 cursor_pos = view_correct_cursor(app, view_id);
-    view_correct_mark(app, view_id);
     
     // NOTE(allen): Scope highlight
     if (global_config.use_scope_highlight)
@@ -743,33 +789,166 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
     I64 view_cursor_pos = view_get_cursor_pos(app, view_id);
     I64 view_mark_pos   = view_get_mark_pos(app, view_id);
     
-    // NOTE(soimn): Brace lines
-    Range_i64 nest = {};
-    I64 nest_pos   = view_cursor_pos;
-    while (find_surrounding_nest(app, buffer, nest_pos, FindNest_Scope, &nest))
-    {
-        Rect_f32 start = text_layout_character_on_screen(app, text_layout_id, nest.start);
-        Rect_f32 end   = text_layout_character_on_screen(app, text_layout_id, nest.end - 1);
-        
-        F32 line_thickness = 5;
-        
-        Rect_f32 line_rect;
-        line_rect.x0 = start.x0;
-        line_rect.x1 = start.x0 + line_thickness;
-        line_rect.y0 = start.y1;
-        line_rect.y1 = (end.y0 != -1 ? end.y0 : visible_range.end);
-        
-        ARGB_Color color = finalize_color(defcolor_comment, 0);
-        
-        draw_rectangle(app, line_rect, 0, color);
-        
-        nest_pos = nest.start - 1;
-    }
-    
     // NOTE(allen): Line highlight
     i64 line_number = get_line_number_from_pos(app, buffer, cursor_pos);
     draw_line_highlight(app, text_layout_id, line_number,
                         fcolor_id(defcolor_highlight_cursor_line));
+    
+    // NOTE(soimn): Brace annotation
+    {
+        Buffer_Cursor cursor = view_compute_cursor(app, view_id, seek_pos(cursor_pos));
+        Vec2_f32 p           = view_relative_xy_of_pos(app, view_id, cursor.line, cursor_pos);
+        I64 start            = view_pos_at_relative_xy(app, view_id, cursor.line, {0, p.y});
+        
+        U8 first_char;
+        if (buffer_read_range(app, buffer, Ii64(start, start + 1), &first_char) &&
+            first_char == '}')
+        {
+            Token_Iterator_Array it = token_iterator_index(0, &token_array, token_index_from_pos(&token_array, start));
+            Token* token            = 0;
+            
+            U32 nest_level = 0;
+            for (;;)
+            {
+                token = token_it_read(&it);
+                if (!token) break;
+                
+                if (token->kind == TokenBaseKind_ParentheticalOpen ||
+                    token->kind == TokenBaseKind_ScopeOpen)
+                {
+                    nest_level -= 1;
+                    
+                    if (nest_level == 0) break;
+                }
+                
+                else if (token->kind == TokenBaseKind_ParentheticalClose ||
+                         token->kind == TokenBaseKind_ScopeClose)
+                {
+                    nest_level += 1;
+                }
+                
+                if (!token_it_dec(&it))
+                {
+                    token = 0;
+                    break;
+                }
+            }
+            
+            if (token != 0 && token->kind == TokenBaseKind_ScopeOpen)
+            {
+                Range_i64 header;
+                header.end = token->pos;
+                
+                if (token_it_dec(&it) && (token = token_it_read(&it)) != 0 &&
+                    (token->kind == TokenBaseKind_ParentheticalClose ||
+                     token->kind == TokenBaseKind_Keyword))
+                {
+                    nest_level = (token->kind == TokenBaseKind_ParentheticalClose);
+                    if (token_it_dec(&it))
+                    {
+                        for (;;)
+                        {
+                            token = token_it_read(&it);
+                            if (!token) break;
+                            
+                            if (token->kind == TokenBaseKind_ParentheticalOpen ||
+                                token->kind == TokenBaseKind_ScopeOpen)
+                            {
+                                if (nest_level == 0) break;
+                                
+                                nest_level -= 1;
+                            }
+                            
+                            else if (token->kind == TokenBaseKind_ParentheticalClose ||
+                                     token->kind == TokenBaseKind_ScopeClose)
+                            {
+                                if (nest_level == 0) break;
+                                
+                                nest_level += 1;
+                            }
+                            
+                            else if (nest_level == 0 && token->kind == TokenBaseKind_StatementClose)
+                            {
+                                break;
+                            }
+                            
+                            else if (nest_level == 0 && token->kind == TokenBaseKind_Keyword)
+                            {
+                                String_Const_u8 lexeme = push_token_lexeme(app, scratch, buffer, token);
+                                if (string_match(lexeme, string_u8_litexpr("else")))
+                                {
+                                    if (!token_it_dec(&it))
+                                    {
+                                        token = 0;
+                                        break;
+                                    }
+                                    
+                                    break;
+                                }
+                            }
+                            
+                            if (!token_it_dec(&it))
+                            {
+                                token = 0;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (token == 0 || token_it_inc(&it) && (token = token_it_read(&it)) != 0)
+                    {
+                        header.start = (token != 0 ? token->pos : 0);
+                        
+                        String_Const_u8 annotation_string;
+                        annotation_string.size = MIN(header.end - header.start, KB(1));
+                        annotation_string.str  = push_array(scratch, U8, annotation_string.size);
+                        
+                        if (buffer_read_range(app, buffer, header, annotation_string.str))
+                        {
+                            bool last_was_space = true;
+                            for (I64 i = 0; i < (I64)annotation_string.size; ++i)
+                            {
+                                if (annotation_string.str[i] == '\r' ||
+                                    annotation_string.str[i] == '\n' ||
+                                    annotation_string.str[i] == '\t' ||
+                                    annotation_string.str[i] == '\v')
+                                {
+                                    annotation_string.str[i] = ' ';
+                                }
+                                
+                                if (annotation_string.str[i] == ' ')
+                                {
+                                    if (last_was_space)
+                                    {
+                                        Copy(annotation_string.str + (i + 1), annotation_string.str + i,
+                                             annotation_string.size - (i + 1));
+                                        
+                                        annotation_string.size -= 1;
+                                        i -= 1;
+                                    }
+                                    
+                                    last_was_space = true;
+                                }
+                                
+                                else last_was_space = false;
+                            }
+                            
+                            Rect_f32 origin_rect = text_layout_character_on_screen(app, text_layout_id,
+                                                                                   start);
+                            
+                            draw_string(app, face_id, string_u8_litexpr("//"),
+                                        V2f32(origin_rect.x0 + 2 * metrics.max_advance, origin_rect.y0),
+                                        fcolor_id(defcolor_comment));
+                            
+                            draw_string(app, face_id, annotation_string,
+                                        V2f32(origin_rect.x0 + 5 * metrics.max_advance, origin_rect.y0),
+                                        fcolor_id(defcolor_comment));
+                        }
+                    }
+                }
+            }
+        }
+    }
     
     // NOTE(soimn): Draw cursor
     bool has_highlight_range = draw_highlight_range(app, view_id, buffer, text_layout_id, 0);

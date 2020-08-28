@@ -35,13 +35,14 @@ enum CALC_NODE_KIND
     CalcNode_IsGreaterOrEQ,
     
     CalcNode_Call,
-    CalcNode_Assignment,
     CalcNode_Variable,
     CalcNode_Number,
     CalcNode_Subscript,
     
     CALC_NODE_KIND_COUNT
 };
+
+#define CALC_FUNC_MAX_ARG_COUNT 8
 
 struct Calc_Node
 {
@@ -70,13 +71,6 @@ struct Calc_Node
             bool is_global;
         } var;
         
-        struct
-        {
-            Calc_Node* left;
-            Calc_Node* right;
-            U8 op;
-        } assignment;
-        
         Number number;
     };
 };
@@ -89,6 +83,54 @@ struct Calc_Var
 
 Calc_Var CalcVariables[256] = {};
 U32 CalcVariableCount       = 0;
+F64 CalcTime                = 0;
+
+#define CALC_FUNC_LIST()                                                                                \
+CALC_FUNC(Sqrt, 1,                                                                                  \
+{                                                                                         \
+Number result;                                                                        \
+result.is_float = true;                                                               \
+result.floating = sqrt((F64)(args[0].is_float ? args[0].floating : args[0].integer)); \
+return result;                                                                        \
+})                                                                                        \
+CALC_FUNC(Time, 0,                                                                                  \
+{                                                                                         \
+Number result;                                                                        \
+result.is_float = true;                                                               \
+result.floating = CalcTime;                                                           \
+return result;                                                                        \
+})                                                                                        \
+CALC_FUNC(Sin, 1,                                                                                   \
+{                                                                                         \
+Number result;                                                                        \
+result.is_float = true;                                                               \
+result.floating = sin((F64)(args[0].is_float ? args[0].floating : args[0].integer));  \
+return result;                                                                        \
+})                                                                                        \
+CALC_FUNC(Cos, 1,                                                                                   \
+{                                                                                         \
+Number result;                                                                        \
+result.is_float = true;                                                               \
+result.floating = cos((F64)(args[0].is_float ? args[0].floating : args[0].integer));  \
+return result;                                                                        \
+})                                                                                        \
+CALC_FUNC(Tan, 1,                                                                                   \
+{                                                                                         \
+Number result;                                                                        \
+result.is_float = true;                                                               \
+result.floating = tan((F64)(args[0].is_float ? args[0].floating : args[0].integer));  \
+return result;                                                                        \
+})
+
+#define CALC_FUNC(name, arg_count, body) Number name (Number args[CALC_FUNC_MAX_ARG_COUNT]) body
+CALC_FUNC_LIST()
+#undef CALC_FUNC
+
+void
+Plot(Calc_Node* func)
+{
+    NOT_IMPLEMENTED;
+}
 
 Calc_Node*
 AddCalcNode(Memory_Arena* arena, U8 kind)
@@ -98,10 +140,18 @@ AddCalcNode(Memory_Arena* arena, U8 kind)
     
     node->kind = kind;
     
+    if (node->kind == CalcNode_Call)
+    {
+        node->call.args = (Calc_Node**)Arena_Allocate(arena, sizeof(Calc_Node*) * CALC_FUNC_MAX_ARG_COUNT,
+                                                      alignof(Calc_Node*));
+        Zero(node->call.args, sizeof(Calc_Node*) * CALC_FUNC_MAX_ARG_COUNT);
+    }
+    
     return node;
 }
 
 bool ParsePrimaryExpr(Memory_Arena* arena, String* string, Calc_Node** result);
+bool ParseLogicalOrExpr(Memory_Arena* arena, String* string, Calc_Node** result);
 
 bool
 ParsePostExpr(Memory_Arena* arena, String* string, Calc_Node** result)
@@ -152,6 +202,53 @@ ParsePostExpr(Memory_Arena* arena, String* string, Calc_Node** result)
                 }
             }
             
+            else if (string->data[0] == '(')
+            {
+                Advance(string, 1);
+                
+                if ((*result)->kind != CalcNode_Variable || (*result)->var.is_global) encountered_errors = true;
+                else
+                {
+                    String name = (*result)->var.name;
+                    
+                    *result = AddCalcNode(arena, CalcNode_Call);
+                    (*result)->call.name = name;
+                    
+                    EatAllWhitespace(string);
+                    
+                    if (string->size != 0 && string->data[0] != ')')
+                        while (!encountered_errors)
+                    {
+                        if ((*result)->call.arg_count >= CALC_FUNC_MAX_ARG_COUNT) encountered_errors = true;
+                        else
+                        {
+                            if (!ParseLogicalOrExpr(arena, string, &(*result)->call.args[(*result)->call.arg_count++]))
+                            {
+                                encountered_errors = true;
+                            }
+                            
+                            else
+                            {
+                                EatAllWhitespace(string);
+                                
+                                if (string->size != 0 && string->data[0] == ',') Advance(string, 1);
+                                else
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    EatAllWhitespace(string);
+                    if (string->size != 0 && string->data[0] == ')') Advance(string, 1);
+                    else
+                    {
+                        encountered_errors = true;
+                    }
+                }
+            }
+            
             else break;
         }
     }
@@ -182,7 +279,7 @@ ParsePrimaryExpr(Memory_Arena* arena, String* string, Calc_Node** result)
                 Advance(string, 1);
             }
             
-            if (!IsAlpha(string->data[0]) || string->data[0] != '_') encountered_errors = true;
+            if (!IsAlpha(string->data[0]) && string->data[0] != '_') encountered_errors = true;
             else
             {
                 String identifier;
@@ -578,7 +675,7 @@ EvalCalcNode(Calc_Node* node, Number* number)
             I64 var_index = -1;
             for (U32 i = 0; i < CalcVariableCount; ++i)
             {
-                if (StringCompare(node->left->var.name, CalcVariables[i].name))
+                if (StringCompare(node->var.name, CalcVariables[i].name))
                 {
                     var_index = i;
                     break;
@@ -638,19 +735,95 @@ EvalCalcNode(Calc_Node* node, Number* number)
         }
     }
     
-    else encountered_errors = true;;
+    else if (node->kind == CalcNode_Call)
+    {
+        Number args[CALC_FUNC_MAX_ARG_COUNT] = {};
+        U32 arg_count                        = 0;
+        
+        for (U32 i = 0; !encountered_errors  && i < node->call.arg_count; ++i)
+        {
+            if (EvalCalcNode(node->call.args[i], &args[i])) ++arg_count;
+            else
+            {
+                encountered_errors = true;
+            }
+        }
+        
+#define ENSURE_ARG_COUNT(n) if (arg_count != (n)) { encountered_errors = true; break; }
+        
+        if (!encountered_errors) do
+        {
+            if (StringCompare(node->call.name, CONST_STRING("int"), false))
+            {
+                ENSURE_ARG_COUNT(1);
+                
+                number->is_float = false;
+                
+                if (args[0].is_float)
+                {
+                    number->integer  =      (I64)args[0].floating;
+                    number->floating = (F64)(I64)args[0].floating;
+                }
+                
+                else
+                {
+                    number->integer  = (I64)args[0].integer;
+                    number->floating = (F64)args[0].integer;
+                }
+            }
+            
+            else if (StringCompare(node->call.name, CONST_STRING("float"), false))
+            {
+                ENSURE_ARG_COUNT(1);
+                
+                number->is_float = true;
+                
+                if (args[0].is_float)
+                {
+                    number->integer  = (I64)args[0].floating;
+                    number->floating = (F64)args[0].floating;
+                }
+                
+                else
+                {
+                    number->integer  = (I64)args[0].integer;
+                    number->floating = (F64)args[0].integer;
+                }
+            }
+            
+#define CALC_FUNC(func_name, req_arg_count, body)                                   \
+else if (StringCompare(node->call.name, CONST_STRING(#func_name), false)) \
+{                                                                               \
+ENSURE_ARG_COUNT(req_arg_count);                                            \
+*number = func_name##(args);                                                \
+}
+            
+            CALC_FUNC_LIST()
+                
+#undef CALC_FUNC
+            
+            
+            
+            else encountered_errors = true;
+            
+        } while (0);
+    }
+    
+    else encountered_errors = true;
     
     return !encountered_errors;
 }
 
 void
-RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layout_id, Face_ID face_id,
+RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layout_id, Face_ID face_id, Frame_Info frame_info,
                   I64 base_pos, I64 cursor_pos, String string)
 {
     Memory_Arena arena = {};
     
     Face_Metrics metrics = get_face_metrics(app, face_id);
     U8* start            = string.data;
+    
+    CalcTime += frame_info.literal_dt;
     
     char char_buffer[256] = {};
     
@@ -668,6 +841,10 @@ RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layo
         }
         
         if (string.size == 0) break;
+        
+        bool is_assignment        = false;
+        bool is_pure_assignment   = false;
+        Calc_Node* assignment_lhs = 0;
         
         Calc_Node* current = 0;
         if (!ParseLogicalOrExpr(&arena, &string, &current)) encountered_errors = true;
@@ -707,15 +884,31 @@ RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layo
                 {
                     Advance(&string, (kind == CalcNode_Invalid ? 1 : 2));
                     
-                    Calc_Node* lhs = current;
+                    is_assignment  = true;
+                    assignment_lhs = current;
                     
-                    current = AddCalcNode(&arena, CalcNode_Assignment);
-                    current->assignment.op   = kind;
-                    current->assignment.left = lhs;
-                    
-                    if (!ParseLogicalOrExpr(&arena, &string, &current->assignment.right))
+                    if (kind != CalcNode_Invalid)
                     {
-                        encountered_errors = true;
+                        Calc_Node* lhs = current;
+                        
+                        current = AddCalcNode(&arena, kind);
+                        current->left = lhs;
+                        
+                        if (!ParseLogicalOrExpr(&arena, &string, &current->right))
+                        {
+                            encountered_errors = true;
+                        }
+                    }
+                    
+                    else
+                    {
+                        is_pure_assignment = true;
+                        
+                        current = 0;
+                        if (!ParseLogicalOrExpr(&arena, &string, &current))
+                        {
+                            encountered_errors = true;
+                        }
                     }
                 }
             }
@@ -741,28 +934,29 @@ RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layo
                 Number number           = {};
                 bool should_draw_number = false;
                 
-                if (current->kind == CalcNode_Assignment)
+                if (is_assignment)
                 {
-                    if (current->left->kind != CalcNode_Variable || current->left->var.is_global) encountered_errors = true;
+                    if (assignment_lhs->kind != CalcNode_Variable || assignment_lhs->var.is_global) encountered_errors = true;
                     else
                     {
                         I64 var_index = -1;
                         for (U32 i = 0; i < CalcVariableCount; ++i)
                         {
-                            if (StringCompare(current->left->var.name, CalcVariables[i].name))
+                            if (StringCompare(assignment_lhs->var.name, CalcVariables[i].name))
                             {
                                 var_index = i;
                                 break;
                             }
                         }
                         
+                        bool is_decl = (var_index == -1);
                         if (var_index == -1)
                         {
                             if (CalcVariableCount == ArrayCount(CalcVariables)) encountered_errors = true;
                             else
                             {
-                                CalcVariables[var_index].name = current->left->var.name;
                                 var_index                     = CalcVariableCount;
+                                CalcVariables[var_index].name = assignment_lhs->var.name;
                                 
                                 CalcVariableCount += 1;
                             }
@@ -770,11 +964,15 @@ RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layo
                         
                         if (!encountered_errors)
                         {
-                            if (!EvalCalcNode(current, &CalcVariables[var_index].value)) encountered_errors = true;
+                            if (is_decl && !is_pure_assignment) encountered_errors = true;
                             else
                             {
-                                should_draw_number = true;
-                                number             = CalcVariables[var_index].value;
+                                if (!EvalCalcNode(current, &number)) encountered_errors = true;
+                                else
+                                {
+                                    should_draw_number             = true;
+                                    CalcVariables[var_index].value = number;
+                                }
                             }
                         }
                     }
@@ -840,4 +1038,7 @@ RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layo
     }
     
     Arena_FreeAll(&arena);
+    
+    Zero(CalcVariables, sizeof(CalcVariables));
+    CalcVariableCount = 0;
 }

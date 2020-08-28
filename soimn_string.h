@@ -31,15 +31,37 @@ IsDigit(char c)
     return (c >= '0' && c <= '9');
 }
 
-inline bool
-StringCompare(String s0, String s1)
+void
+Advance(String* string, U64 amount)
 {
-    while (s0.size != 0 && s1.size != 0 && s0.data[0] == s1.data[0])
+    if (string->size >= amount)
     {
-        s0.data += 1;
-        s0.size -= 1;
-        s1.data += 1;
-        s1.size -= 1;
+        string->data += amount;
+        string->size -= amount;
+    }
+    
+    else ZeroStruct(string);
+}
+
+inline bool
+StringCompare(String s0, String s1, bool is_case_sensitive = true)
+{
+    if (is_case_sensitive)
+    {
+        while (s0.size != 0 && s1.size != 0 && s0.data[0] == s1.data[0])
+        {
+            Advance(&s0, 1);
+            Advance(&s1, 1);
+        }
+    }
+    
+    else
+    {
+        while (s0.size != 0 && s1.size != 0 && ToUpper(s0.data[0]) == ToUpper(s1.data[0]))
+        {
+            Advance(&s0, 1);
+            Advance(&s1, 1);
+        }
     }
     
     return (s0.size == 0 && s1.size == 0);
@@ -50,10 +72,8 @@ SubStringCompare(String s0, String s1)
 {
     while (s0.size != 0 && s1.size != 0 && s0.data[0] == s1.data[0])
     {
-        s0.data += 1;
-        s0.size -= 1;
-        s1.data += 1;
-        s1.size -= 1;
+        Advance(&s0, 1);
+        Advance(&s1, 1);
     }
     
     return (s0.size == 0 || s1.size == 0);
@@ -65,18 +85,6 @@ CStringLength(const char* cstring)
     U64 result = 0;
     for (char* scan = (char*)cstring; *scan; ++scan, ++result);
     return result;
-}
-
-void
-Advance(String* string, U64 amount)
-{
-    if (string->size >= amount)
-    {
-        string->data += amount;
-        string->size -= amount;
-    }
-    
-    else ZeroStruct(string);
 }
 
 void

@@ -512,9 +512,8 @@ SoimnSetColors(Application_Links* app)
 }
 
 void
-SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
-                  Buffer_ID buffer, Text_Layout_ID text_layout_id,
-                  Rect_f32 rect)
+SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id, Frame_Info frame_info,
+                  Buffer_ID buffer, Text_Layout_ID text_layout_id, Rect_f32 rect)
 {
     ProfileScope(app, "SoimnRenderBuffer");
     
@@ -951,7 +950,9 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                     
                     comment_string.data += 3;
                     
-                    RenderCalcComment(app, view_id, text_layout_id, face_id, token->pos + 3, cursor_pos, comment_string);
+                    RenderCalcComment(app, view_id, text_layout_id, face_id, frame_info, token->pos + 3, cursor_pos,
+                                      comment_string);
+                    animate_in_n_milliseconds(app, 0);
                 }
             }
         }
@@ -1073,7 +1074,7 @@ SoimnRenderCaller(Application_Links* app, Frame_Info frame_info, View_ID view_id
     // NOTE(soimn): The clipping mask is set to query_bar_region, but the buffer region is set to region.
     //              This is done to make the query bar appear directly over, and occluding the buffer content,
     //              instead of offseting it to make space.
-    SoimnRenderBuffer(app, view_id, face_id, buffer, text_layout_id, region);
+    SoimnRenderBuffer(app, view_id, face_id, frame_info, buffer, text_layout_id, region);
     
     text_layout_free(app, text_layout_id);
     draw_set_clip(app, prev_clip);

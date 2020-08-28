@@ -154,8 +154,9 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
     
     if (result == 0)
     {
-        if (arena->first_block == 0 ||
-            arena->first_block->space < AlignOffset((U8*)arena->first_block + arena->first_block->offset, alignment) + size)
+        if (arena->current_block == 0 ||
+            arena->current_block->space < AlignOffset((U8*)arena->current_block + arena->current_block->offset,
+                                                      alignment) + size)
         {
             if (arena->current_block && arena->current_block->space)
             {
@@ -166,7 +167,7 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
             }
             
             if (arena->current_block && arena->current_block->next != 0 &&
-	        (arena->current_block->next->offset + arena->current_block->next->space) - sizeof(Memory_Block) >= size)
+                (arena->current_block->next->offset + arena->current_block->next->space) - sizeof(Memory_Block) >= size)
             {
                 arena->current_block = arena->current_block->next;
                 arena->current_block->space  = arena->current_block->offset - sizeof(Memory_Block);

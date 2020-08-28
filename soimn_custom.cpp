@@ -48,6 +48,7 @@ typedef f64 F64;
 #define INVALID_DEFAULT_CASE ASSERT(!"INVALID_DEFAULT_CASE")
 
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "soimn_memory.h"
 #include "soimn_string.h"
@@ -667,74 +668,48 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                     
                     if (buffer_read_range(app, buffer, Ii64(token), comment_string.data))
                     {
-                        if (comment_string.size >= 3 &&
-                            SubStringCompare(comment_string, CONST_STRING("//c")) &&
-                            SubStringCompare(comment_string, CONST_STRING("/*c")))
+                        if (SubStringCompare(comment_string, CONST_STRING("//// ")) &&
+                            comment_string.size >= 5)
                         {
-                            String calc_comment;
-                            calc_comment.data = comment_string.data + 3;
-                            
-                            if (SubStringCompare(comment_string, CONST_STRING("/*c")))
-                            {
-                                calc_comment.size = comment_string.size - 6;
-                            }
-                            
-                            else
-                            {
-                                calc_comment.size = comment_string.size - 3;
-                            }
-                            
-                            if (cursor_pos >= token->pos && cursor_pos < token->pos + token->size)
-                            {
-                                RenderCalcComment(token->pos, calc_comment);
-                            }
+                            paint_text_color(app, text_layout_id, Ii64(token), SoimnErrCommentColor);
+                            comment_string.data += 5;
+                            comment_string.size -= 5;
                         }
                         
-                        else
+                        else if (SubStringCompare(comment_string, CONST_STRING("/// ")) &&
+                                 comment_string.size >= 4)
                         {
-                            if (SubStringCompare(comment_string, CONST_STRING("//// ")) &&
-                                comment_string.size >= 5)
-                            {
-                                paint_text_color(app, text_layout_id, Ii64(token), SoimnErrCommentColor);
-                                comment_string.data += 5;
-                                comment_string.size -= 5;
-                            }
+                            paint_text_color(app, text_layout_id, Ii64(token), SoimnHighCommentColor);
+                            comment_string.data += 4;
+                            comment_string.size -= 4;
+                        }
+                        
+                        
+                        U32 offset = 0;
+                        while (offset != comment_string.size)
+                        {
+                            String tail;
+                            tail.data = comment_string.data + offset;
+                            tail.size = comment_string.size - offset;
                             
-                            else if (SubStringCompare(comment_string, CONST_STRING("/// ")) &&
-                                     comment_string.size >= 4)
+                            bool did_match = false;
+                            for (U32 i = 0; i < ArrayCount(keywords); ++i)
                             {
-                                paint_text_color(app, text_layout_id, Ii64(token), SoimnHighCommentColor);
-                                comment_string.data += 4;
-                                comment_string.size -= 4;
-                            }
-                            
-                            
-                            U32 offset = 0;
-                            while (offset != comment_string.size)
-                            {
-                                String tail;
-                                tail.data = comment_string.data + offset;
-                                tail.size = comment_string.size - offset;
-                                
-                                bool did_match = false;
-                                for (U32 i = 0; i < ArrayCount(keywords); ++i)
+                                if (SubStringCompare(tail, keywords[i].string) &&
+                                    tail.size >= keywords[i].string.size)
                                 {
-                                    if (SubStringCompare(tail, keywords[i].string) &&
-                                        tail.size >= keywords[i].string.size)
-                                    {
-                                        paint_text_color(app, text_layout_id,
-                                                         Ii64_size(token->pos + offset, keywords[i].string.size),
-                                                         keywords[i].color);
-                                        
-                                        offset += (U32)keywords[i].string.size;
-                                        
-                                        did_match = true;
-                                        break;
-                                    }
+                                    paint_text_color(app, text_layout_id,
+                                                     Ii64_size(token->pos + offset, keywords[i].string.size),
+                                                     keywords[i].color);
+                                    
+                                    offset += (U32)keywords[i].string.size;
+                                    
+                                    did_match = true;
+                                    break;
                                 }
-                                
-                                if (!did_match) offset += 1;
                             }
+                            
+                            if (!did_match) offset += 1;
                         }
                     }
                 }
@@ -945,6 +920,38 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id,
                                         fcolor_id(defcolor_comment));
                         }
                     }
+                }
+            }
+        }
+    }
+    
+    // NOTE(soimn): Calc comments
+    
+    {
+        Buffer_Cursor cursor = view_compute_cursor(app, view_id, seek_pos(cursor_pos));
+        Vec2_f32 p           = view_relative_xy_of_pos(app, view_id, cursor.line, cursor_pos);
+        I64 start            = view_pos_at_relative_xy(app, view_id, cursor.line, {0, p.y});
+        
+        Token* token = get_token_from_pos(app, &token_array, start);
+        
+        if (token != 0 && token->kind == TokenBaseKind_Comment)
+        {
+            String comment_string = {0};
+            comment_string.data = push_array(scratch, U8, token->size);
+            comment_string.size = token->size;
+            
+            if (buffer_read_range(app, buffer, Ii64(token), comment_string.data))
+            {
+                if (comment_string.size >= 3 &&
+                    (SubStringCompare(comment_string, CONST_STRING("//c")) ||
+                     SubStringCompare(comment_string, CONST_STRING("/*c"))))
+                {
+                    if (SubStringCompare(comment_string, CONST_STRING("/*c"))) comment_string.size -= 5;
+                    else                                                       comment_string.size -= 3;
+                    
+                    comment_string.data += 3;
+                    
+                    RenderCalcComment(app, view_id, text_layout_id, face_id, token->pos + 3, cursor_pos, comment_string);
                 }
             }
         }

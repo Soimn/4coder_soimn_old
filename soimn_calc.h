@@ -81,10 +81,21 @@ struct Calc_Node
     };
 };
 
+struct Calc_Var
+{
+    String name;
+    Number value;
+};
+
+Calc_Var CalcVariables[256] = {};
+U32 CalcVariableCount       = 0;
+
 Calc_Node*
 AddCalcNode(Memory_Arena* arena, U8 kind)
 {
     Calc_Node* node = (Calc_Node*)Arena_Allocate(arena, sizeof(Calc_Node), alignof(Calc_Node));
+    ZeroStruct(node);
+    
     node->kind = kind;
     
     return node;
@@ -101,7 +112,7 @@ ParsePostExpr(Memory_Arena* arena, String* string, Calc_Node** result)
     {
         EatAllWhitespace(string);
         
-        if (string->size > 1) break;
+        if (string->size <= 1) break;
         else
         {
             if (string->data[0] == '*' && string->data[1] == '*')
@@ -267,6 +278,8 @@ ParsePrimaryExpr(Memory_Arena* arena, String* string, Calc_Node** result)
         
         else if (string->data[0] == '(')
         {
+            Advance(string, 1);
+            
             if (!ParseLogicalOrExpr(arena, string, result)) encountered_errors = true;
             else
             {
@@ -343,48 +356,48 @@ ParseMulLevelExpr(Memory_Arena* arena, String* string, Calc_Node** result)
 {
     bool encountered_errors = false;
     
-    if (!ParseUnaryExpr(arena, string, result)) encountered_errors = true;
-    else
+    Calc_Node** current = result;
+    while (!encountered_errors)
     {
-        EatAllWhitespace(string);
-        
-        if (string->size >= 1                            &&
-            !(string->size >= 2 && string->data[1] == '=') &&
-            !(string->size >= 3 && string->data[0] == string->data[1] && string->data[2] == '='))
+        if (!ParseUnaryExpr(arena, string, (*current != 0 ? &(*current)->right : current))) encountered_errors = true;
+        else
         {
+            EatAllWhitespace(string);
+            
             U8 kind = CalcNode_Invalid;
             
-            if      (string->data[0] == '*') kind = CalcNode_Mul;
-            else if (string->data[0] == '/') kind = CalcNode_Div;
-            else if (string->data[0] == '%') kind = CalcNode_Mod;
-            else if (string->data[0] == '^') kind = CalcNode_BitXor;
-            
-            else if (string->data[0] == '&' &&
-                     (string->size < 2 || string->data[1] != '&'))
+            if (string->size >= 1                            &&
+                !(string->size >= 2 && string->data[1] == '=') &&
+                !(string->size >= 3 && string->data[0] == string->data[1] && string->data[2] == '='))
             {
-                kind = CalcNode_BitAnd;
+                if      (string->data[0] == '*') kind = CalcNode_Mul;
+                else if (string->data[0] == '/') kind = CalcNode_Div;
+                else if (string->data[0] == '%') kind = CalcNode_Mod;
+                else if (string->data[0] == '^') kind = CalcNode_BitXor;
+                
+                else if (string->data[0] == '&' &&
+                         (string->size < 2 || string->data[1] != '&'))
+                {
+                    kind = CalcNode_BitAnd;
+                }
+                
+                else if (string->size >= 2 && string->data[0] == string->data[1])
+                {
+                    if      (string->data[0] == '<') kind = CalcNode_BitLShift;
+                    else if (string->data[0] == '>') kind = CalcNode_BitRShift;
+                }
             }
             
-            else if (string->size >= 2 && string->data[0] == string->data[1])
-            {
-                if      (string->data[0] == '<') kind = CalcNode_BitLShift;
-                else if (string->data[0] == '>') kind = CalcNode_BitRShift;
-            }
-            
-            if (kind != CalcNode_Invalid)
+            if (kind == CalcNode_Invalid) break;
+            else
             {
                 if (kind == CalcNode_BitLShift || kind == CalcNode_BitRShift) Advance(string, 2);
                 else                                                          Advance(string, 1);
                 
-                Calc_Node* lhs = *result;
+                Calc_Node* lhs = *current;
                 
-                *result = AddCalcNode(arena, kind);
-                (*result)->left = lhs;
-                
-                if (!ParseMulLevelExpr(arena, string, &(*result)->right))
-                {
-                    encountered_errors = true;
-                }
+                *current = AddCalcNode(arena, kind);
+                (*current)->left = lhs;
             }
         }
     }
@@ -397,33 +410,34 @@ ParseAddLevelExpr(Memory_Arena* arena, String* string, Calc_Node** result)
 {
     bool encountered_errors = false;
     
-    if (!ParseMulLevelExpr(arena, string, result)) encountered_errors = true;
-    else
+    Calc_Node** current = result;
+    while (!encountered_errors)
     {
-        EatAllWhitespace(string);
-        
-        if (string->size >= 1 &&
-            !(string->size >= 2 && string->data[1] == '='))
+        if (!ParseMulLevelExpr(arena, string, (*current != 0 ? &(*current)->right : current))) encountered_errors = true;
+        else
         {
+            EatAllWhitespace(string);
+            
             U8 kind = CalcNode_Invalid;
             
-            if      (string->data[0] == '+')                           kind = CalcNode_Add;
-            else if (string->data[0] == '-')                           kind = CalcNode_Sub;
-            else if (string->data[0] == '|' && string->data[1] != '|') kind = CalcNode_BitOr;
+            if (string->size >= 1 &&
+                !(string->size >= 2 && string->data[1] == '='))
+            {
+                
+                if      (string->data[0] == '+')                           kind = CalcNode_Add;
+                else if (string->data[0] == '-')                           kind = CalcNode_Sub;
+                else if (string->data[0] == '|' && string->data[1] != '|') kind = CalcNode_BitOr;
+            }
             
-            if (kind != CalcNode_Invalid)
+            if (kind == CalcNode_Invalid) break;
+            else
             {
                 Advance(string, 1);
                 
-                Calc_Node* lhs = *result;
+                Calc_Node* lhs = *current;
                 
-                *result = AddCalcNode(arena, kind);
-                (*result)->left = lhs;
-                
-                if (!ParseAddLevelExpr(arena, string, &(*result)->right))
-                {
-                    encountered_errors = true;
-                }
+                *current = AddCalcNode(arena, kind);
+                (*current)->left = lhs;
             }
         }
     }
@@ -436,42 +450,42 @@ ParseComparisonExpr(Memory_Arena* arena, String* string, Calc_Node** result)
 {
     bool encountered_errors = false;
     
-    if (!ParseAddLevelExpr(arena, string, result)) encountered_errors = true;
-    else
+    Calc_Node** current = result;
+    while (!encountered_errors)
     {
-        EatAllWhitespace(string);
-        
-        U8 kind = CalcNode_Invalid;
-        
-        if (string->size >= 1)
+        if (!ParseAddLevelExpr(arena, string, (*current != 0 ? &(*current)->right : current))) encountered_errors = true;
+        else
         {
-            if (string->size > 1 && string->data[1] == '=')
+            EatAllWhitespace(string);
+            
+            U8 kind = CalcNode_Invalid;
+            
+            if (string->size >= 1)
             {
-                if      (string->data[0] == '=') kind = CalcNode_IsEqual;
-                else if (string->data[0] == '<') kind = CalcNode_IsLessOrEQ;
-                else if (string->data[0] == '>') kind = CalcNode_IsGreaterOrEQ;
+                if (string->size > 1 && string->data[1] == '=')
+                {
+                    if      (string->data[0] == '=') kind = CalcNode_IsEqual;
+                    else if (string->data[0] == '<') kind = CalcNode_IsLessOrEQ;
+                    else if (string->data[0] == '>') kind = CalcNode_IsGreaterOrEQ;
+                }
+                
+                else
+                {
+                    if      (string->data[0] == '<') kind = CalcNode_IsLess;
+                    else if (string->data[0] == '>') kind = CalcNode_IsGreater;
+                }
             }
             
+            if (kind == CalcNode_Invalid) break;
             else
-            {
-                if      (string->data[0] == '<') kind = CalcNode_IsLess;
-                else if (string->data[0] == '>') kind = CalcNode_IsGreater;
-            }
-            
-            if (kind != CalcNode_Invalid)
             {
                 if (kind == CalcNode_IsLess || kind == CalcNode_IsGreater) Advance(string, 1);
                 else                                                       Advance(string, 2);
                 
-                Calc_Node* lhs = *result;
+                Calc_Node* lhs = *current;
                 
-                *result = AddCalcNode(arena, kind);
-                (*result)->left = lhs;
-                
-                if (!ParseAddLevelExpr(arena, string, &(*result)->right))
-                {
-                    encountered_errors = true;
-                }
+                *current = AddCalcNode(arena, kind);
+                (*current)->left = lhs;
             }
         }
     }
@@ -484,27 +498,28 @@ ParseLogicalAndExpr(Memory_Arena* arena, String* string, Calc_Node** result)
 {
     bool encountered_errors = false;
     
-    if (!ParseComparisonExpr(arena, string, result)) encountered_errors = true;
-    else
+    Calc_Node** current = result;
+    while (!encountered_errors)
     {
-        EatAllWhitespace(string);
-        
-        if (string->size > 1       &&
-            string->data[0] == '&' &&
-            string->data[1] == '&' &&
-            (string->size < 3 || string->data[2] != '='))
+        if (!ParseComparisonExpr(arena, string, (*current != 0 ? &(*current)->right : current))) encountered_errors = true;
+        else
         {
-            Advance(string, 2);
+            EatAllWhitespace(string);
             
-            Calc_Node* lhs = *result;
-            
-            *result = AddCalcNode(arena, CalcNode_And);
-            (*result)->left = lhs;
-            
-            if (!ParseLogicalAndExpr(arena, string, &(*result)->right))
+            if (string->size > 1       &&
+                string->data[0] == '&' &&
+                string->data[1] == '&' &&
+                (string->size < 3 || string->data[2] != '='))
             {
-                encountered_errors = true;
+                Advance(string, 2);
+                
+                Calc_Node* lhs = *current;
+                
+                *current = AddCalcNode(arena, CalcNode_And);
+                (*current)->left = lhs;
             }
+            
+            else break;
         }
     }
     
@@ -516,41 +531,143 @@ ParseLogicalOrExpr(Memory_Arena* arena, String* string, Calc_Node** result)
 {
     bool encountered_errors = false;
     
-    if (!ParseLogicalAndExpr(arena, string, result)) encountered_errors = true;
-    else
+    Calc_Node** current = result;
+    while (!encountered_errors)
     {
-        EatAllWhitespace(string);
-        
-        if (string->size > 1       &&
-            string->data[0] == '|' &&
-            string->data[1] == '|' &&
-            (string->size < 3 || string->data[2] != '='))
+        if (!ParseLogicalAndExpr(arena, string, (*current != 0 ? &(*current)->right : current))) encountered_errors = true;
+        else
         {
-            Advance(string, 2);
+            EatAllWhitespace(string);
             
-            Calc_Node* lhs = *result;
-            
-            *result = AddCalcNode(arena, CalcNode_Or);
-            (*result)->left = lhs;
-            
-            if (!ParseLogicalOrExpr(arena, string, &(*result)->right))
+            if (string->size > 1       &&
+                string->data[0] == '|' &&
+                string->data[1] == '|' &&
+                (string->size < 3 || string->data[2] != '='))
             {
-                encountered_errors = true;
+                Advance(string, 2);
+                
+                Calc_Node* lhs = *current;
+                
+                *current = AddCalcNode(arena, CalcNode_Or);
+                (*current)->left = lhs;
             }
+            
+            else break;
         }
     }
     
     return !encountered_errors;
 }
 
+bool
+EvalCalcNode(Calc_Node* node, Number* number)
+{
+    bool encountered_errors = false;
+    
+    if (node->kind == CalcNode_Number) *number = node->number;
+    
+    else if (node->kind == CalcNode_Variable)
+    {
+        if (node->var.is_global)
+        {
+            NOT_IMPLEMENTED;
+        }
+        
+        else
+        {
+            I64 var_index = -1;
+            for (U32 i = 0; i < CalcVariableCount; ++i)
+            {
+                if (StringCompare(node->left->var.name, CalcVariables[i].name))
+                {
+                    var_index = i;
+                    break;
+                }
+            }
+            
+            if (var_index == -1) encountered_errors = true;
+            else
+            {
+                *number = CalcVariables[var_index].value;
+            }
+        }
+    }
+    
+    else if (node->kind == CalcNode_Add ||
+             node->kind == CalcNode_Sub ||
+             node->kind == CalcNode_Mul ||
+             node->kind == CalcNode_Div ||
+             node->kind == CalcNode_Pow)
+    {
+        Number lhs, rhs;
+        if (!EvalCalcNode(node->left, &lhs) || !EvalCalcNode(node->right, &rhs)) encountered_errors = true;
+        else
+        {
+            number->is_float = (lhs.is_float || rhs.is_float);
+            
+            if (node->kind == CalcNode_Add)
+            {
+                number->integer  = lhs.integer  + rhs.integer;
+                number->floating = lhs.floating + rhs.floating;
+            }
+            
+            else if (node->kind == CalcNode_Sub)
+            {
+                number->integer  = lhs.integer  - rhs.integer;
+                number->floating = lhs.floating - rhs.floating;
+            }
+            
+            else if (node->kind == CalcNode_Mul)
+            {
+                number->integer  = lhs.integer  * rhs.integer;
+                number->floating = lhs.floating * rhs.floating;
+            }
+            
+            else if (node->kind == CalcNode_Div)
+            {
+                number->integer  = lhs.integer  / rhs.integer;
+                number->floating = lhs.floating / rhs.floating;
+            }
+            
+            else
+            {
+                number->is_float = true;
+                
+                number->floating = pow(lhs.floating, rhs.floating);
+            }
+        }
+    }
+    
+    else encountered_errors = true;;
+    
+    return !encountered_errors;
+}
+
 void
-RenderCalcComment(I64 base_pos, String string)
+RenderCalcComment(Application_Links* app, View_ID view, Text_Layout_ID text_layout_id, Face_ID face_id,
+                  I64 base_pos, I64 cursor_pos, String string)
 {
     Memory_Arena arena = {};
+    
+    Face_Metrics metrics = get_face_metrics(app, face_id);
+    U8* start            = string.data;
+    
+    char char_buffer[256] = {};
     
     for (;;)
     {
         bool encountered_errors = false;
+        
+        while (string.size != 0 && (string.data[0] == ' ' ||
+                                    string.data[0] == '\t' ||
+                                    string.data[0] == '\v' ||
+                                    string.data[0] == '\r' ||
+                                    string.data[0] == '\n'))
+        {
+            Advance(&string, 1);
+        }
+        
+        if (string.size == 0) break;
         
         Calc_Node* current = 0;
         if (!ParseLogicalOrExpr(&arena, &string, &current)) encountered_errors = true;
@@ -611,17 +728,115 @@ RenderCalcComment(I64 base_pos, String string)
             }
         }
         
+        I64 pos = base_pos + (string.data - start);
+        Buffer_Cursor cursor = view_compute_cursor(app, view, seek_pos(pos));
+        Vec2_f32 p           = view_relative_xy_of_pos(app, view, cursor.line, pos);
+        I64 line_start       = view_pos_at_relative_xy(app, view, cursor.line, {0, p.y});
+        I64 line_end         = view_pos_at_relative_xy(app, view, cursor.line, {max_f32, p.y});
+        
+        if (!encountered_errors)
+        {
+            if (current != 0)
+            {
+                Number number           = {};
+                bool should_draw_number = false;
+                
+                if (current->kind == CalcNode_Assignment)
+                {
+                    if (current->left->kind != CalcNode_Variable || current->left->var.is_global) encountered_errors = true;
+                    else
+                    {
+                        I64 var_index = -1;
+                        for (U32 i = 0; i < CalcVariableCount; ++i)
+                        {
+                            if (StringCompare(current->left->var.name, CalcVariables[i].name))
+                            {
+                                var_index = i;
+                                break;
+                            }
+                        }
+                        
+                        if (var_index == -1)
+                        {
+                            if (CalcVariableCount == ArrayCount(CalcVariables)) encountered_errors = true;
+                            else
+                            {
+                                CalcVariables[var_index].name = current->left->var.name;
+                                var_index                     = CalcVariableCount;
+                                
+                                CalcVariableCount += 1;
+                            }
+                        }
+                        
+                        if (!encountered_errors)
+                        {
+                            if (!EvalCalcNode(current, &CalcVariables[var_index].value)) encountered_errors = true;
+                            else
+                            {
+                                should_draw_number = true;
+                                number             = CalcVariables[var_index].value;
+                            }
+                        }
+                    }
+                }
+                
+                else
+                {
+                    if (current->kind == CalcNode_Call && current->left->kind == CalcNode_Variable &&
+                        current->left->var.is_global == false &&
+                        StringCompare(current->left->var.name, CONST_STRING("plot")))
+                    {
+                        NOT_IMPLEMENTED;
+                    }
+                    
+                    else
+                    {
+                        should_draw_number = true;
+                        if (!EvalCalcNode(current, &number))
+                        {
+                            encountered_errors = true;
+                        }
+                    }
+                }
+                
+                if (!encountered_errors && should_draw_number)
+                {
+                    if (cursor_pos >= line_start && cursor_pos <= line_end)
+                    {
+                        String_Const_u8 disp_string;
+                        disp_string.str = (U8*)char_buffer;
+                        
+                        if (number.is_float)
+                        {
+                            disp_string.size = snprintf(char_buffer, ArrayCount(char_buffer), "= %g", number.floating);
+                        }
+                        
+                        else
+                        {
+                            disp_string.size = snprintf(char_buffer, ArrayCount(char_buffer), "= %lld", number.integer);
+                        }
+                        
+                        Rect_f32 origin_rect = text_layout_character_on_screen(app, text_layout_id, line_end);
+                        
+                        draw_string(app, face_id, disp_string,
+                                    V2f32(origin_rect.x0 + metrics.max_advance, origin_rect.y0),
+                                    pack_color(V4f32(1.0f, 0.2f, 0.2f, 1.0f)));
+                    }
+                }
+            }
+        }
+        
         if (encountered_errors)
         {
+            Rect_f32 origin_rect = text_layout_character_on_screen(app, text_layout_id, line_end);
+            
+            draw_string(app, face_id, string_u8_litexpr("X"),
+                        V2f32(origin_rect.x0 + metrics.max_advance, origin_rect.y0),
+                        pack_color(V4f32(1.0f, 0.2f, 0.2f, 1.0f)));
             break;
         }
         
-        else
-        {
-            NOT_IMPLEMENTED;
-            
-            Arena_ClearAll(&arena);
-        }
+        Arena_ClearAll(&arena);
     }
     
     Arena_FreeAll(&arena);

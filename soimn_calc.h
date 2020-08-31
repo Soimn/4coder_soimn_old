@@ -1067,8 +1067,16 @@ EvalCalcNode(Calc_Node* node, Number* number)
                 
                 else
                 {
-                    number->integer  = lhs.integer  / rhs.integer;
-                    number->floating = lhs.floating / rhs.floating;
+                    if (number->is_float)
+                    {
+                        number->floating = lhs.floating / rhs.floating;
+                    }
+                    
+                    else
+                    {
+                        number->integer  = lhs.integer  / rhs.integer;
+                        number->floating = lhs.floating / rhs.floating;
+                    }
                 }
             }
             

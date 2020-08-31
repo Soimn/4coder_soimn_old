@@ -41,14 +41,15 @@ typedef f64 F64;
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define ABS(n) ((n) < 0 ? -(n) : (n))
 
 #define ASSERT(EX) ((EX) ? 0 : *(volatile int*)0)
 #define NOT_IMPLEMENTED ASSERT(!"NOT_IMPLEMENTED")
 #define INVALID_CODE_PATH ASSERT(!"INVALID_CODE_PATH")
 #define INVALID_DEFAULT_CASE ASSERT(!"INVALID_DEFAULT_CASE")
 
-#include <stdlib.h>
 #include <stdio.h>
+#include <cmath>
 
 #include "soimn_memory.h"
 #include "soimn_string.h"
@@ -66,13 +67,21 @@ ARGB_Color SoimnTempColor        = 0xFFA00000;
 ARGB_Color SoimnHighCommentColor = 0xFFBBBBBB;
 ARGB_Color SoimnErrCommentColor  = 0xFFEE5830;
 
+enum CODE_NOTE_KIND
+{
+    CodeNote_Function,
+    CodeNote_Macro,
+    CodeNote_Type,
+    CodeNote_Enum,
+};
+
 struct Code_Note
 {
-    Code_Index_Note_Kind note_kind;
     Range_i64 pos;
     String_Const_u8 text;
     struct Code_Index_File* file;
     char peek[2];
+    U8 kind;
 };
 
 struct Code_Note_Array
@@ -634,18 +643,20 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id, Fram
                         Token* peek = 0;
                         if (token_it_inc(&peek_it)) peek = token_it_read(&peek_it);
                         
-                        if (note->note_kind == CodeIndexNote_Macro) argb_color = SoimnMacroColor;
-                        else if (note->note_kind == CodeIndexNote_Type &&
+                        if (note->kind == CodeNote_Macro) argb_color = SoimnMacroColor;
+                        else if (note->kind == CodeNote_Type &&
                                  (peek == 0 || peek->kind != TokenBaseKind_ScopeOpen))
                         {
                             argb_color = SoimnTypeColor;
                         }
                         
-                        else if (note->note_kind == CodeIndexNote_Function &&
+                        else if (note->kind == CodeNote_Function &&
                                  peek != 0 && peek->kind == TokenBaseKind_ParentheticalOpen)
                         {
                             argb_color = SoimnFunctionColor;
                         }
+                        
+                        else if (note->kind == CodeNote_Enum) argb_color = SoimnEnumColor;
                     }
                 }
                 
@@ -924,40 +935,6 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id, Fram
         }
     }
     
-    // NOTE(soimn): Calc comments
-    
-    {
-        Buffer_Cursor cursor = view_compute_cursor(app, view_id, seek_pos(cursor_pos));
-        Vec2_f32 p           = view_relative_xy_of_pos(app, view_id, cursor.line, cursor_pos);
-        I64 start            = view_pos_at_relative_xy(app, view_id, cursor.line, {0, p.y});
-        
-        Token* token = get_token_from_pos(app, &token_array, start);
-        
-        if (token != 0 && token->kind == TokenBaseKind_Comment)
-        {
-            String comment_string = {0};
-            comment_string.data = push_array(scratch, U8, token->size);
-            comment_string.size = token->size;
-            
-            if (buffer_read_range(app, buffer, Ii64(token), comment_string.data))
-            {
-                if (comment_string.size >= 3 &&
-                    (SubStringCompare(comment_string, CONST_STRING("//c")) ||
-                     SubStringCompare(comment_string, CONST_STRING("/*c"))))
-                {
-                    if (SubStringCompare(comment_string, CONST_STRING("/*c"))) comment_string.size -= 5;
-                    else                                                       comment_string.size -= 3;
-                    
-                    comment_string.data += 3;
-                    
-                    RenderCalcComment(app, view_id, text_layout_id, face_id, frame_info, token->pos + 3, cursor_pos,
-                                      comment_string);
-                    animate_in_n_milliseconds(app, 0);
-                }
-            }
-        }
-    }
-    
     // NOTE(soimn): Draw cursor
     bool has_highlight_range = draw_highlight_range(app, view_id, buffer, text_layout_id, 0);
     
@@ -997,9 +974,53 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id, Fram
     
     // NOTE(allen): put the actual text on the actual screen
     draw_text_layout_default(app, text_layout_id);
+    
+    
+    // NOTE(soimn): Calc comments
+    
+    {
+        Buffer_Cursor cursor = view_compute_cursor(app, view_id, seek_pos(cursor_pos));
+        Vec2_f32 p           = view_relative_xy_of_pos(app, view_id, cursor.line, cursor_pos);
+        I64 start            = view_pos_at_relative_xy(app, view_id, cursor.line, {0, p.y});
+        
+        Token* token = get_token_from_pos(app, &token_array, start);
+        
+        if (token != 0 && token->kind == TokenBaseKind_Comment)
+        {
+            String comment_string = {0};
+            comment_string.data = push_array(scratch, U8, token->size);
+            comment_string.size = token->size;
+            
+            if (buffer_read_range(app, buffer, Ii64(token), comment_string.data))
+            {
+                if (comment_string.size >= 3 &&
+                    (SubStringCompare(comment_string, CONST_STRING("//c")) ||
+                     SubStringCompare(comment_string, CONST_STRING("/*c"))))
+                {
+                    if (SubStringCompare(comment_string, CONST_STRING("/*c"))) comment_string.size -= 5;
+                    else                                                       comment_string.size -= 3;
+                    
+                    comment_string.data += 3;
+                    
+                    RenderCalcComment(app, view_id, text_layout_id, face_id, frame_info, token->pos + 3, cursor_pos,
+                                      comment_string);
+                    animate_in_n_milliseconds(app, 0);
+                }
+            }
+        }
+        
+        else if (buffer == get_buffer_by_name(app, string_u8_litexpr("*calc*"), AccessFlag_Read))
+        {
+            String_Const_u8 calc_buffer = push_whole_buffer(app, scratch, buffer);
+            
+            RenderCalcComment(app, view_id, text_layout_id, face_id, frame_info, 0, cursor_pos,
+                              {calc_buffer.str, calc_buffer.size});
+            animate_in_n_milliseconds(app, 0);
+        }
+    }
 }
 
-void SoimnUpdateNoteArrays(Buffer_ID buffer);
+void SoimnUpdateNoteArrays(Application_Links* app, Buffer_ID buffer);
 
 void
 SoimnRenderCaller(Application_Links* app, Frame_Info frame_info, View_ID view_id)
@@ -1303,7 +1324,7 @@ BUFFER_HOOK_SIG(SoimnBeginBuffer)
     
     if (add_new) BufferInfoCount += 1;
     
-    SoimnUpdateNoteArrays(buffer_id);
+    SoimnUpdateNoteArrays(app, buffer_id);
     
     return 0;
 }
@@ -1354,7 +1375,7 @@ SoimnRemoveNoteArrays(Buffer_Info* info)
 }
 
 void
-SoimnUpdateNoteArrays(Buffer_ID buffer)
+SoimnUpdateNoteArrays(Application_Links* app, Buffer_ID buffer)
 {
     ASSERT(buffer >= 0 && (U32)buffer < BufferInfoCount);
     
@@ -1362,6 +1383,9 @@ SoimnUpdateNoteArrays(Buffer_ID buffer)
     SoimnRemoveNoteArrays(info);
     
     Code_Index_File* file = code_index_get_file(buffer);
+    
+    Token_Array token_array = get_token_array_from_buffer(app, buffer);
+    Scratch_Block scratch(app);
     
     if (file != 0)
     {
@@ -1377,65 +1401,137 @@ SoimnUpdateNoteArrays(Buffer_ID buffer)
             
             ASSERT(array_index != -1);
             
-            Code_Note_Array* array = info->note_arrays[array_index];
-            
-            ASSERT(array == 0 || array->size <= array->capacity);
-            if (array == 0 || array->size == array->capacity)
-            {
-                U32 new_capacity = (array == 0 ? 256 : 2 * array->capacity);
-                auto new_array = (Code_Note_Array*)Arena_Allocate(&info->arena,
-                                                                  sizeof(Code_Note_Array) + sizeof(Code_Note) * new_capacity,
-                                                                  alignof(Code_Note_Array));
+            auto AddCodeNote = [info, array_index](Code_Note note) {
                 
-                new_array->size     = 0;
-                new_array->capacity = new_capacity;
+                Code_Note_Array* array = info->note_arrays[array_index];
                 
-                if (array != 0) new_array->next = array->next;
-                else            new_array->next = NoteArrays[array_index];
-                
-                if (array != 0)
+                ASSERT(array == 0 || array->size <= array->capacity);
+                if (array == 0 || array->size == array->capacity)
                 {
-                    Copy((U8*)array + sizeof(Code_Note_Array), (U8*)new_array + sizeof(Code_Note_Array),
-                         array->size * sizeof(Code_Note));
+                    U32 new_capacity = (array == 0 ? 256 : 2 * array->capacity);
                     
-                    new_array->size = array->size;
-                    ASSERT(new_array->size <= 512);
+                    void* memory = Arena_Allocate(&info->arena, sizeof(Code_Note_Array) + sizeof(Code_Note) * new_capacity,
+                                                  alignof(Code_Note_Array));
                     
-                    Code_Note_Array* prev = 0;
-                    for (Code_Note_Array* scan = NoteArrays[array_index]; scan != 0; )
+                    Code_Note_Array* new_array = (Code_Note_Array*)memory;
+                    
+                    new_array->size     = 0;
+                    new_array->capacity = new_capacity;
+                    
+                    if (array != 0)
                     {
-                        if (scan == array) break;
-                        else
+                        Copy((U8*)array + sizeof(Code_Note_Array), (U8*)new_array + sizeof(Code_Note_Array),
+                             array->size * sizeof(Code_Note));
+                        
+                        new_array->size = array->size;
+                        
+                        Code_Note_Array* prev = 0;
+                        for (Code_Note_Array* scan = NoteArrays[array_index]; scan != 0; )
                         {
-                            prev = scan;
-                            scan = scan->next;
+                            if (scan == array) break;
+                            else
+                            {
+                                prev = scan;
+                                scan = scan->next;
+                            }
                         }
+                        
+                        if (prev) prev->next         = array->next;
+                        else NoteArrays[array_index] = array->next;
+                        
+                        Arena_Free(&info->arena, array, sizeof(Code_Note_Array) + array->capacity * sizeof(Code_Note));
                     }
                     
-                    if (prev) prev->next         = array->next;
-                    else NoteArrays[array_index] = array->next;
+                    info->note_arrays[array_index] = new_array;
+                    array                          = new_array;
                     
-                    
-                    Arena_Free(&info->arena, array, array->capacity * sizeof(Code_Note));
+                    new_array->next         = NoteArrays[array_index];
+                    NoteArrays[array_index] = new_array;
                 }
                 
-                array = new_array;
-                info->note_arrays[array_index] = array;
-                array->next             = NoteArrays[array_index];
-                NoteArrays[array_index] = array;
-            }
-            
-            Code_Note* note = (Code_Note*)(array + 1) + array->size;
-            array->size    += 1;
+                *((Code_Note*)(array + 1) + array->size) = note;
+                array->size                             += 1;
+            };
             
             Code_Index_Note* index_note = file->note_array.ptrs[i];
             
-            note->note_kind = index_note->note_kind;
-            note->pos       = index_note->pos;
-            note->text      = index_note->text;
-            note->file      = index_note->file;
-            note->peek[0]   = index_note->text.str[0];
-            note->peek[1]   = (index_note->text.size > 1 ? index_note->text.str[1] : 0);
+            Token_Iterator_Array it = token_iterator_index(0, &token_array,
+                                                           token_index_from_pos(&token_array, index_note->pos.start));
+            
+            Token* token = 0;
+            if (token_it_dec(&it)) token = token_it_read(&it);
+            
+            if (index_note->note_kind == CodeIndexNote_Type && (token != 0 && token->kind == TokenBaseKind_Keyword &&
+                                                                string_match(push_token_lexeme(app, scratch, buffer, token),
+                                                                             string_u8_litexpr("enum"))))
+            {
+                if (token_it_inc(&it) && token_it_inc(&it))
+                {
+                    token = token_it_read(&it);
+                    
+                    if (token->kind == TokenBaseKind_ScopeOpen && token_it_inc(&it))
+                    {
+                        token = token_it_read(&it);
+                        
+                        for (;;)
+                        {
+                            if (token->kind != TokenBaseKind_Identifier) break;
+                            else
+                            {
+                                Code_Note note = {};
+                                
+                                note.text.str  = (U8*)Arena_Allocate(&info->arena, token->size,
+                                                                     alignof(char));
+                                note.text.size = token->size;
+                                
+                                if (!buffer_read_range(app, buffer, Ii64(token), note.text.str)) break;
+                                else
+                                {
+                                    note.kind    = CodeNote_Enum;
+                                    note.pos     = Ii64(token);
+                                    note.file    = index_note->file;
+                                    note.peek[0] = note.text.str[0];
+                                    note.peek[1] = (note.text.size > 1 ? note.text.str[1] : 0);
+                                    
+                                    AddCodeNote(note);
+                                    
+                                    while (token != 0 && token->kind != TokenBaseKind_ScopeClose &&
+                                           token->kind != TokenBaseKind_StatementClose)
+                                    {
+                                        if (!token_it_inc(&it)) break;
+                                        token = token_it_read(&it);
+                                    }
+                                    
+                                    if (token == 0 || token->kind != TokenBaseKind_StatementClose) break;
+                                    else
+                                    {
+                                        if (!token_it_inc(&it)) break;
+                                        token = token_it_read(&it);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            else if (index_note->note_kind != CodeIndexNote_4coderCommand)
+            {
+                Code_Note note = {};
+                
+                if      (index_note->note_kind == CodeIndexNote_Function) note.kind = CodeNote_Function;
+                else if (index_note->note_kind == CodeIndexNote_Macro)    note.kind = CodeNote_Macro;
+                else if (index_note->note_kind == CodeIndexNote_Type)     note.kind = CodeNote_Type;
+                else INVALID_CODE_PATH;
+                
+                note.pos     = index_note->pos;
+                note.text    = index_note->text;
+                note.file    = index_note->file;
+                note.peek[0] = index_note->text.str[0];
+                note.peek[1] = (index_note->text.size > 1 ? index_note->text.str[1] : 0);
+                
+                AddCodeNote(note);
+            }
         }
     }
 }
@@ -1472,7 +1568,7 @@ SoimnTick(Application_Links *app, Frame_Info frame_info)
         code_index_lock();
         code_index_set_file(buffer_id, arena, index);
         
-        SoimnUpdateNoteArrays(buffer_id);
+        SoimnUpdateNoteArrays(app, buffer_id);
         
         code_index_unlock();
         
@@ -1537,6 +1633,12 @@ custom_layer_init(Application_Links* app)
     
     global_config.lister_roundness = 0;
     SoimnSetColors(app);
+    
+    Buffer_ID calc_buffer = create_buffer(app, string_u8_litexpr("*calc*"),
+                                          BufferCreate_NeverAttachToFile |
+                                          BufferCreate_AlwaysNew);
+    
+    buffer_set_setting(app, calc_buffer, BufferSetting_Unimportant, true);
 }
 
 #endif

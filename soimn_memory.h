@@ -77,12 +77,13 @@ Arena_Free(Memory_Arena* arena, void* ptr, U64 size)
 {
     ASSERT(size <= U32_MAX);
     
-#if SOIMN_DEBUG_MODE
+#define SOIMN_DEBUG_MODE
+#ifdef SOIMN_DEBUG_MODE
     bool was_found = false;
     
     for (Memory_Block* block = arena->first_block; block != 0; block = block->next)
     {
-        if (ptr >= block + 1 && ptr < (U8*)block + block->offset)
+        if (ptr >= block + 1 && (U8*)ptr + size <= (U8*)block + block->offset)
         {
             was_found = true;
             break;
@@ -94,7 +95,7 @@ Arena_Free(Memory_Arena* arena, void* ptr, U64 size)
     
     if (size >= sizeof(Memory_Free_Entry) + (alignof(Memory_Free_Entry) - 1))
     {
-        Memory_Free_Entry* entry = (Memory_Free_Entry*)Align(ptr, alignof(void*));
+        Memory_Free_Entry* entry = (Memory_Free_Entry*)Align(ptr, alignof(U64));
         entry->next   = arena->first_free;
         entry->offset = (U8)((U8*)entry - (U8*)ptr);
         entry->space  = (U32)(size - entry->offset);
@@ -126,6 +127,7 @@ Arena_ClearAll(Memory_Arena* arena)
     	arena->first_block->space  = arena->first_block->offset - sizeof(Memory_Block);
     	arena->first_block->offset = sizeof(Memory_Block);
     	arena->current_block       = arena->first_block;
+        arena->first_free          = 0;
     }
 }
 
@@ -139,13 +141,17 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
     
     if (arena->first_free != 0)
     {
-        for (Memory_Free_Entry* scan = arena->first_free; scan != 0; scan = scan->next)
+        Memory_Free_Entry* prev = 0;
+        for (Memory_Free_Entry* scan = arena->first_free; scan != 0; prev = scan, scan = scan->next)
         {
             U8 offset = AlignOffset((U8*)scan - scan->offset, alignment);
             
-            if (size <= scan->offset + scan->space - offset)
+            if (size <= (scan->offset + scan->space) - offset)
             {
-                result = (U8*)scan + (offset - scan->offset);
+                if (prev != 0) prev->next = scan->next;
+                else arena->first_free    = scan->next;
+                
+                result = ((U8*)scan - scan->offset) + offset;
                 
                 Arena_Free(arena, (U8*)result + size, (scan->offset + scan->space) - (offset + size));
             }
@@ -160,17 +166,20 @@ Arena_Allocate(Memory_Arena* arena, U64 size, U8 alignment)
         {
             if (arena->current_block && arena->current_block->space)
             {
-                Arena_Free(arena, (U8*)arena->current_block + arena->current_block->offset, arena->current_block->space);
+                U8* ptr  = (U8*)arena->current_block + arena->current_block->offset;
+                U32 size = arena->current_block->space;
                 
                 arena->current_block->offset += arena->current_block->space;
                 arena->current_block->space   = 0;
+                
+                Arena_Free(arena, ptr, size);
             }
             
-            if (arena->current_block && arena->current_block->next != 0 &&
+            if (arena->current_block && arena->current_block->next &&
                 (arena->current_block->next->offset + arena->current_block->next->space) - sizeof(Memory_Block) >= size)
             {
-                arena->current_block = arena->current_block->next;
-                arena->current_block->space  = arena->current_block->offset - sizeof(Memory_Block);
+                arena->current_block         = arena->current_block->next;
+                arena->current_block->space += arena->current_block->offset - sizeof(Memory_Block);
                 arena->current_block->offset = sizeof(Memory_Block);
             }
             

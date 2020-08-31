@@ -1296,7 +1296,7 @@ EvalCalcNode(Calc_Node* node, Number* number)
 else if (StringCompare(node->call.name, CONST_STRING(#func_name), false))       \
 {                                                                               \
 if (arg_count != (req_arg_count)) { encountered_errors = true; break; }     \
-*number = func_name##(args);                                                \
+*number = func_name(args);                                                  \
 }
             
             CALC_FUNC_LIST()

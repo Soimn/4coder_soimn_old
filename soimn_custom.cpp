@@ -595,68 +595,68 @@ SoimnRenderBuffer(Application_Links* app, View_ID view_id, Face_ID face_id, Fram
                     
                     String_Const_u8 lexeme = push_token_lexeme(app, scratch, buffer, token);
                     
-                    Code_Note* note = 0;
-                    
-                    char first_char = lexeme.str[0];
-                    
-                    I32 array_index = -1;
-                    
-                    if      (first_char >= 'a' && first_char <= 'z') array_index = first_char - 'a';
-                    else if (first_char >= 'A' && first_char <= 'Z') array_index = (first_char - 'A') + 27;
-                    else if (first_char == '_')                      array_index = 54;
-                    
-                    if (array_index != -1)
+                    if (lexeme.str != 0)
                     {
-                        char lexeme_peek[2];
-                        lexeme_peek[0] = first_char;
-                        lexeme_peek[1] = (lexeme.size != 0 ? lexeme.str[1] : 0);
+                        Code_Note* note = 0;
+                        char first_char = lexeme.str[0];
                         
-                        for (Code_Note_Array* scan = NoteArrays[array_index];
-                             scan != 0;
-                             scan = scan->next)
+                        I32 array_index = -1;
+                        
+                        if      (first_char >= 'a' && first_char <= 'z') array_index = first_char - 'a';
+                        else if (first_char >= 'A' && first_char <= 'Z') array_index = (first_char - 'A') + 27;
+                        else if (first_char == '_')                      array_index = 54;
+                        
+                        if (array_index != -1)
                         {
-                            for (Code_Note* note_scan = (Code_Note*)(scan + 1);
-                                 note_scan < (Code_Note*)(scan + 1) + scan->size;
-                                 ++note_scan)
+                            char lexeme_peek[2];
+                            lexeme_peek[0] = first_char;
+                            lexeme_peek[1] = (lexeme.size != 0 ? lexeme.str[1] : 0);
+                            
+                            for (Code_Note_Array* scan = NoteArrays[array_index];
+                                 scan != 0;
+                                 scan = scan->next)
                             {
-                                if (note_scan->peek[0] == lexeme_peek[0] &&
-                                    note_scan->peek[1] == lexeme_peek[1] &&
-                                    string_match(lexeme, note_scan->text))
+                                for (Code_Note* note_scan = (Code_Note*)(scan + 1);
+                                     note_scan < (Code_Note*)(scan + 1) + scan->size;
+                                     ++note_scan)
                                 {
-                                    note = note_scan;
-                                    break;
+                                    if (note_scan->peek[0] == lexeme_peek[0] &&
+                                        note_scan->peek[1] == lexeme_peek[1] &&
+                                        string_match(lexeme, note_scan->text))
+                                    {
+                                        note = note_scan;
+                                        break;
+                                    }
                                 }
+                                
+                                if (note != 0) break;
+                            }
+                        }
+                        
+                        if (note != 0)
+                        {
+                            Token_Iterator_Array peek_it = token_iterator_index(0, &token_array,
+                                                                                token_index_from_pos(&token_array,
+                                                                                                     token->pos));
+                            
+                            Token* peek = 0;
+                            if (token_it_inc(&peek_it)) peek = token_it_read(&peek_it);
+                            
+                            if (note->kind == CodeNote_Macro) argb_color = SoimnMacroColor;
+                            else if (note->kind == CodeNote_Type &&
+                                     (peek == 0 || peek->kind != TokenBaseKind_ScopeOpen))
+                            {
+                                argb_color = SoimnTypeColor;
                             }
                             
-                            if (note != 0) break;
+                            else if (note->kind == CodeNote_Function &&
+                                     peek != 0 && peek->kind == TokenBaseKind_ParentheticalOpen)
+                            {
+                                argb_color = SoimnFunctionColor;
+                            }
+                            
+                            else if (note->kind == CodeNote_Enum) argb_color = SoimnEnumColor;
                         }
-                    }
-                    
-                    if (note != 0)
-                    {
-                        Token_Iterator_Array peek_it = token_iterator_index(0, &token_array,
-                                                                            token_index_from_pos(&token_array,
-                                                                                                 token->pos));
-                        
-                        // TODO(soimn): Add syntax highlighting for enum members
-                        
-                        Token* peek = 0;
-                        if (token_it_inc(&peek_it)) peek = token_it_read(&peek_it);
-                        
-                        if (note->kind == CodeNote_Macro) argb_color = SoimnMacroColor;
-                        else if (note->kind == CodeNote_Type &&
-                                 (peek == 0 || peek->kind != TokenBaseKind_ScopeOpen))
-                        {
-                            argb_color = SoimnTypeColor;
-                        }
-                        
-                        else if (note->kind == CodeNote_Function &&
-                                 peek != 0 && peek->kind == TokenBaseKind_ParentheticalOpen)
-                        {
-                            argb_color = SoimnFunctionColor;
-                        }
-                        
-                        else if (note->kind == CodeNote_Enum) argb_color = SoimnEnumColor;
                     }
                 }
                 
